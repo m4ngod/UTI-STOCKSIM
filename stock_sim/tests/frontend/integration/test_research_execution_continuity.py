@@ -14,6 +14,8 @@ from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
+from sqlalchemy import event
+from sqlalchemy.exc import OperationalError
 
 from app.app_context import build_app_context
 from app.event_bridge import EventBridge
@@ -53,14 +55,8 @@ class HeldEmbeddedInvocation:
         return self.delegate.invoke(invocation)
 
 
-@pytest.mark.parametrize("destination,navigation_name", [
-    (JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS, "evidenceAndFindingsRouteNavigation"),
-    (JourneyWorkspaceRoute.STRATEGY_LIBRARY, "strategyLibraryRouteNavigation"),
-    (JourneyWorkspaceRoute.SCENARIO_LAB, "scenarioLabRouteNavigation"),
-])
-def test_real_start_completes_after_page_switch_health_overlay_and_view_disposal(
-    tmp_path, monkeypatch, record_property, destination, navigation_name,
-):
+@pytest.fixture
+def live_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
     app = QApplication.instance() or QApplication([])
     if not QFontDatabase.families():
@@ -75,6 +71,28 @@ def test_real_start_completes_after_page_switch_health_overlay_and_view_disposal
         strategy_diagnostics_read_model=LiveStrategyDiagnosticsV1ApplicationAdapter(application, engine),
         event_bridge=bridge, system_health_sampling_interval=None,
     )
+    try:
+        yield app, context, application, engine, gate
+    finally:
+        gate.release.set()
+        context.close()
+        auxiliary.close()
+        bridge.stop()
+        engine.dispose()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+@pytest.mark.parametrize("destination,navigation_name,warm_scenario", [
+    (JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS, "evidenceAndFindingsRouteNavigation", False),
+    (JourneyWorkspaceRoute.STRATEGY_LIBRARY, "strategyLibraryRouteNavigation", False),
+    (JourneyWorkspaceRoute.SCENARIO_LAB, "scenarioLabRouteNavigation", False),
+    (JourneyWorkspaceRoute.SCENARIO_LAB, "scenarioLabRouteNavigation", True),
+])
+def test_real_start_completes_after_page_switch_health_overlay_and_view_disposal(
+    live_execution, record_property, destination, navigation_name, warm_scenario,
+):
+    app, context, application, _, gate = live_execution
     host = probe = None
     worker = ThreadPoolExecutor(max_workers=1)
     try:
@@ -97,6 +115,21 @@ def test_real_start_completes_after_page_switch_health_overlay_and_view_disposal
         host.resize(1426, 786)
         host.show()
         app.processEvents()
+        root = host.rootObject()
+        previous_details = None
+        if warm_scenario:
+            # A deliberate previously observed resource, not a cold-start probe.
+            assert host.activate_route(JourneyWorkspaceRoute.SCENARIO_LAB)
+            catalog = root.findChild(QQuickItem, "researchScenarioPageList")
+            page = root.findChild(QQuickItem, "researchScenarioPage")
+            until(app, lambda: catalog.property("count") > 0
+                  and "正在读取" not in page.property("statusText"))
+            catalog.forceActiveFocus()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+            previous_details = root.findChild(QQuickItem, "researchScenarioPageDetails").property("text")
+            assert previous_details
+            assert host.activate_route(JourneyWorkspaceRoute.DIAGNOSTIC_TASKS)
         pending = worker.submit(feature.start_formal_diagnostic_campaign,
             StartFormalDiagnosticCampaign(
                 command_id=DiagnosticCommandId("research-continuity-start"),
@@ -106,7 +139,6 @@ def test_real_start_completes_after_page_switch_health_overlay_and_view_disposal
             ))
         until(app, gate.entered.is_set)
         assert not pending.done()
-        root = host.rootObject()
         navigation = root.findChild(QQuickItem, navigation_name)
         navigation.forceActiveFocus()
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
@@ -116,6 +148,9 @@ def test_real_start_completes_after_page_switch_health_overlay_and_view_disposal
         if destination is JourneyWorkspaceRoute.SCENARIO_LAB:
             page = root.findChild(QQuickItem, "researchScenarioPage")
             assert "正在读取场景资源" in page.property("statusText")
+            if warm_scenario:
+                assert "stale" in page.property("statusText")
+                assert root.findChild(QQuickItem, "researchScenarioPageDetails").property("text") == previous_details
         health = root.findChild(QQuickItem, "researchHealthButton")
         health.forceActiveFocus()
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
@@ -164,9 +199,58 @@ def test_real_start_completes_after_page_switch_health_overlay_and_view_disposal
             host.close_adapter()
             host.close()
             host.deleteLater()
-        context.close()
-        auxiliary.close()
-        bridge.stop()
-        engine.dispose()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+def test_scenario_database_read_failure_ends_waiting_and_preserves_stale_content(live_execution):
+    app, context, _, engine, _ = live_execution
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        scenario_lab_feature=context.scenario_lab_feature,
+        initial_route="scenario_lab", research_shell=True,
+    )
+    host.resize(1426, 786)
+    host.show()
+    fault_installed = False
+
+    def fail_database_read(connection, cursor, statement, parameters, execution_context, many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            raise OperationalError(statement, parameters, RuntimeError("private-database-location"))
+
+    try:
+        root = host.rootObject()
+        page = root.findChild(QQuickItem, "researchScenarioPage")
+        catalog = root.findChild(QQuickItem, "researchScenarioPageList")
+        until(app, lambda: catalog.property("count") > 0 and "正在读取" not in page.property("statusText"))
+        catalog.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        details = root.findChild(QQuickItem, "researchScenarioPageDetails")
+        previous = details.property("text")
+        assert previous
+        assert host.activate_route(JourneyWorkspaceRoute.RUN_MONITORING)
+        event.listen(engine, "before_cursor_execute", fail_database_read)
+        fault_installed = True
+        assert host.activate_route(JourneyWorkspaceRoute.SCENARIO_LAB)
+        until(app, lambda: "场景资源观察暂不可用" in page.property("statusText"))
+        assert "正在读取" not in page.property("statusText")
+        assert "stale" in page.property("statusText")
+        assert "private-database-location" not in page.property("statusText")
+        assert details.property("text") == previous
+        event.remove(engine, "before_cursor_execute", fail_database_read)
+        fault_installed = False
+        assert host.activate_route(JourneyWorkspaceRoute.RUN_MONITORING)
+        assert host.activate_route(JourneyWorkspaceRoute.SCENARIO_LAB)
+        until(app, lambda: "fresh" in page.property("statusText")
+              and "正在读取" not in page.property("statusText")
+              and "暂不可用" not in page.property("statusText"))
+        assert details.property("text") == previous
+    finally:
+        if fault_installed:
+            event.remove(engine, "before_cursor_execute", fail_database_read)
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         app.processEvents()

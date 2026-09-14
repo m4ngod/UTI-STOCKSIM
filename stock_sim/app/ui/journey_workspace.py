@@ -854,7 +854,7 @@ class ScenarioLabQtAdapter(QObject):
         error = ""
         try:
             subscription = self._feature.subscribe(context, deliver)
-        except RuntimeError:
+        except Exception:  # noqa: BLE001 - isolate read-boundary failures from the Qt observation.
             error = "场景资源观察暂不可用；可重新进入场景库重试。"
         else:
             with self._subscription_lock:
@@ -907,6 +907,10 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def freshness(self) -> str:
+        if self._observation_message and self._state.last_reliable_inventory is not None:
+            # This is the page's observation freshness, not a mutation of the
+            # authoritative Feature snapshot retained during the pending read.
+            return "stale"
         return self._state.freshness.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
