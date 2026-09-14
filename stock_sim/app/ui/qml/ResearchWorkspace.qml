@@ -71,7 +71,10 @@ Rectangle {
         spacing: tokens.spaceSm
         RowLayout {
             Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            spacing: tokens.spaceSm
             Text {
+                id: productName
                 text: "UTI / STOCKSIM"
                 color: tokens.textPrimary
                 font.pixelSize: tokens.bodySize
@@ -82,9 +85,15 @@ Rectangle {
                 id: healthButton
                 objectName: "researchHealthButton"
                 tokens: workspace.designSystem
-                text: "系统状态 · " + (systemHealth === null ? "未知" : systemHealth.overallClassification)
+                readonly property string fullSummary: systemHealth === null
+                    ? "系统状态 · 未知 · 尚无观察 · 当前影响待确认" : systemHealth.summaryText
+                readonly property bool compactSummary: summaryMeasure.advanceWidth(fullSummary) + 24
+                    > workspace.width - tokens.spaceMd * 2 - productName.implicitWidth - tokens.spaceSm * 2
+                FontMetrics { id: summaryMeasure; font.pixelSize: healthButton.labelSize }
+                text: !compactSummary ? fullSummary : (systemHealth === null ? "系统状态 · 未知"
+                    : "系统状态 · " + systemHealth.summaryStatusText + " · " + systemHealth.summaryFreshnessText)
                 Accessible.name: "只读系统状态。" + (systemHealth === null
-                    ? "尚无系统状态观察" : systemHealth.statusText)
+                    ? "尚无系统状态观察，当前影响待确认" : systemHealth.summaryText)
                 accessibleDescription: "打开只读系统详情，不暂停实验或改变当前观察对象。"
                 onInvoked: healthPopup.open()
             }

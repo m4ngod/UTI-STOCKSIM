@@ -7399,6 +7399,84 @@ class SystemHealthQtAdapter(QObject):
         )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def summaryStatusText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "未知"
+        if (self._state.overall_classification.value == "healthy"
+                and self._state.freshness.value != "fresh"):
+            return "未知"
+        labels = {
+            "healthy": "正常", "recovered": "已恢复", "recovering": "恢复中",
+            "degraded": "受限", "stale": "过期", "unavailable": "不可用",
+            "incompatible": "不兼容", "unknown": "未知",
+            "context_missing": "关联任务缺失", "context_superseded": "关联版本已失效",
+            "context_incompatible": "关联不兼容", "context_unavailable": "关联不可用",
+            "diagnostic_failed": "关联任务失败", "diagnostic_completed": "关联任务已完成",
+        }
+        return labels.get(self._state.overall_classification.value, "未知")
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def summaryFreshnessText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "正在读取观察"
+        return {
+            "fresh": "观察新鲜", "stale": "观察过期",
+            "awaiting_first_state": "尚无可靠观察",
+        }.get(
+            self._state.freshness.value, "观察新旧未知",
+        )
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def summaryText(self) -> str:  # noqa: N802
+        return (f"系统状态 · {self.summaryStatusText} · {self.summaryFreshnessText}"
+                f" · {self.summaryImpactText}")
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def summaryImpactText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "当前影响待确认"
+        # This selects an observation to explain, never an action capability or
+        # execution target. Priority follows the existing health aggregate.
+        priority = {
+            "incompatible": 0, "unavailable": 1, "stale": 2,
+            "degraded": 3, "recovering": 3, "fallback": 3, "unknown": 4,
+        }
+        labels = {
+            "incompatible": "不兼容", "unavailable": "不可用", "stale": "已过期",
+            "degraded": "受限", "recovering": "恢复中", "fallback": "使用回退",
+            "unknown": "状态未知",
+        }
+        observations = (
+            ("运行时", self.componentClassification, "application_runtime"),
+            ("数据源", self.dataSourceClassification, "diagnostic_data_source"),
+            ("队列", self.queueClassification, "diagnostic_queue"),
+            ("缓存", self.cacheClassification, "diagnostic_cache"),
+            ("持久化", self.persistenceClassification, "diagnostic_persistence"),
+            ("版本兼容", self.versionClassification, "version_compatibility"),
+        )
+        concerns = [item for item in observations if item[1] in priority]
+        concern = min(concerns, key=lambda item: priority[item[1]]) if concerns else None
+        primary = "未发现系统限制" if concern is None else concern[0] + labels[concern[1]]
+        if concern is None and self._state.freshness.value != "fresh":
+            primary = "当前影响待确认"
+        association = (
+            "未关联任务" if self._state.diagnostic_context.requested is None
+            else "关联工作影响见详情"
+        )
+        if concern is not None:
+            impact = next((item for item in self._state.component_impacts
+                           if item.component.value == concern[2]), None)
+            scopes = {
+                "diagnostic_task": "旧任务", "task_handle": "任务进度",
+                "formal_diagnostic_campaign": "实验批次", "strategy_run": "运行",
+                "diagnostic_evidence": "证据", "diagnostic_finding": "发现",
+                "sensitivity_breakpoint": "敏感度断点", "reproduction_manifest": "复现资料",
+            }
+            if impact is not None and impact.affected_scope:
+                association = "影响" + "、".join(scopes[item.value] for item in impact.affected_scope)
+        return f"{primary}；{association}"
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def diagnosticContextResolution(self) -> str:  # noqa: N802
         return (
             "no_current_task"

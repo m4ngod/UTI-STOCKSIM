@@ -116,6 +116,14 @@ def test_health_details_identify_the_exact_affected_task(live_execution, size, s
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
         popup = root.findChild(QObject, "researchHealthPopup")
         until(app, lambda: task.task_id.value in popup.property("adapter").property("diagnosticIdentityText"))
+        header = QAccessible.queryAccessibleInterface(button)
+        assert header.role() == QAccessible.Role.Button
+        header_name = header.text(QAccessible.Text.Name)
+        assert header_name.startswith("只读系统状态。系统状态 · ")
+        assert any(label in header_name for label in (
+            "观察新鲜", "观察过期", "尚无可靠观察", "观察新旧未知",
+        ))
+        assert "未关联任务" not in header_name
         facts = root.findChild(QQuickItem, "researchHealthFacts")
         visible = facts.property("text")
         assert task.task_id.value in visible
