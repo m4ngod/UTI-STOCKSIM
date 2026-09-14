@@ -132,7 +132,8 @@ Rectangle {
         ScrollView {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: workspace.activeRoute !== "strategy_library"
+            visible: workspace.activeRoute === "run_monitoring"
+                || workspace.activeRoute === "system_health"
             contentWidth: availableWidth
             TextArea {
                 objectName: "researchExistingResourceSummary"
@@ -165,6 +166,27 @@ Rectangle {
             Layout.fillHeight: true
             visible: workspace.activeRoute === "strategy_library"
             adapter: strategyAssetQueries
+            tokens: workspace.designSystem
+        }
+        ResearchScenarioPage {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: workspace.activeRoute === "scenario_lab"
+            adapter: scenarioLab
+            tokens: workspace.designSystem
+        }
+        ResearchLabPage {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: workspace.activeRoute === "diagnostic_tasks"
+            adapter: diagnosticTasks
+            tokens: workspace.designSystem
+        }
+        ResearchArchivePage {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: workspace.activeRoute === "evidence_and_findings"
+            adapter: evidenceAndFindings
             tokens: workspace.designSystem
         }
     }

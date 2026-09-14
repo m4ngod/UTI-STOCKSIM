@@ -3437,6 +3437,27 @@ class DiagnosticTasksQtAdapter(QObject):
             f"{task.configuration.content_identity.value}"
         )
 
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def researchTaskResources(self) -> list[dict[str, str]]:  # noqa: N802
+        """Read-only presentation of the explicitly selected legacy task."""
+        task = self._state.task
+        if task is None:
+            return []
+        return [{
+            "key": f"task:{task.task_id.value}:{task.configuration.content_identity.value}",
+            "label": f"旧任务 · {task.task_id.value}\n{task.lifecycle.value} · r{task.revision}",
+            "details": "\n\n".join((
+                "旧任务兼容 · 保留原 task/config 身份",
+                self.taskStatusText,
+                "校验\n" + self.validationStatusText,
+                "批准\n" + self.approvalStatusText,
+                "活动与运行来源\n" + self.campaignHandoffText,
+                "任务进度\n" + self.taskHandleText,
+                "限制原因\n" + self.blockingReasonsText,
+                "观察来源\n" + self.sourceText,
+            )),
+        }]
+
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def taskHandleText(self) -> str:  # noqa: N802
         task = self._state.task
@@ -5659,6 +5680,39 @@ class EvidenceAndFindingsQtAdapter(QObject):
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def hasReliableData(self) -> bool:  # noqa: N802
         return self._state.last_reliable_data is not None
+
+    @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
+    def researchEvidenceResources(self) -> list[dict[str, str]]:  # noqa: N802
+        """Project preserved records without recomputing or aggregating evidence."""
+        data = self._state.last_reliable_data
+        if data is None:
+            return []
+        rows: list[dict[str, str]] = []
+        for candidate in data.candidates:
+            provenance = candidate.provenance
+            source = "\n".join((
+                self.pinnedIdentitiesText,
+                f"候选: {candidate.identity.value} · {candidate.label}",
+                "产物哈希: " + ", ".join(provenance.artifact_hashes),
+                "来源运行: " + ", ".join(item.value for item in provenance.source_run_ids),
+                f"Runner: {provenance.runner_version} · Build: {provenance.build_version}",
+            ))
+            for record in candidate.evidence:
+                rows.append({
+                    "key": repr((data.evidence_package_id.value, candidate.identity.value,
+                                 "record", record.identity.value)),
+                    "label": f"证据 · {record.label}\n{record.identity.value}",
+                    "details": "\n".join((
+                        "旧证据兼容 · 原始观察",
+                        f"证据: {record.identity.value}",
+                        f"原值: {record.value} {record.unit}",
+                        f"可用性: {record.availability.value}",
+                        f"覆盖层: {record.coverage.value} · 维度: {record.dimension.value}",
+                        record.interpretation,
+                        "\n精确来源\n" + source,
+                    )),
+                })
+        return rows
 
     @Property("QVariantList", notify=localStateChanged)  # type: ignore[arg-type]
     def candidateIdentities(self) -> list[str]:  # noqa: N802

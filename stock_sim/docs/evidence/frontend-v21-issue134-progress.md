@@ -23,9 +23,11 @@ unchanged. No release, main-branch merge or public upload is part of this checkp
   overlay displays the six existing fact categories; Escape returns to its trigger
   without changing the observed route. Unknown is not presented as healthy.
 - The legacy six-route QML entry and Widgets rollback are unchanged by default.
-  The new shell is **not yet the normal application/package entry**. Other three
-  new pages currently contain only existing status projections, not their required
-  usable resource views. This transitional condition is not the intended end state.
+  The new shell is **not yet the normal application/package entry**. The next
+  resource checkpoint replaces status-only Scenario/Lab/Archive surfaces with
+  exact read-only resource browsers, as detailed in
+  `frontend-v21-issue134-resource-pages-progress.md`. These remain incomplete
+  product workflows, not the intended final authoring or analytical capabilities.
 
 Visual direction: restrained dark work surface, clear row selection and precise
 identity text, no card mosaic or decorative motion. Content order: navigation,
@@ -152,10 +154,11 @@ SHA-256 binding for the final review-fix run (local file bytes before commit):
 
 ### Remaining implementation and verification
 
-1. Replace the other three pages' status-only surfaces with usable, exact existing
-   resource projections and honest capability limitations. Preserve independent
-   task/run capabilities inside one Lab; do not expose legacy AI source selection
-   as V2.1 scenario creation or infer new Attempt/checkpoint semantics.
+1. Finish the resource projections after the Scenario/Lab/Archive first read paths:
+   archive comparison/finding drill-down, unavailable-source recovery and retained
+   exact context; independently usable task/run observation inside the Lab.
+   Do not expose legacy AI authoring as V2.1 creation or invent Attempt/checkpoint
+   semantics. Full creation and cross-experiment analysis remain successor slices.
 2. Finish context-aware read-only health summaries, each group's observation age
    and impact, legacy-health routing, semantic focus fallback and modal containment.
 3. Test switching pages during real execution and late read completion; demonstrate
