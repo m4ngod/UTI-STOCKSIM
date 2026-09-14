@@ -6,6 +6,10 @@ ResearchResourceBrowser {
     required property var adapter
     title: "场景库"
     statusText: adapter === null ? "场景资源不可用" : adapter.statusMessage + " · " + adapter.freshness
+    emptyMessage: adapter !== null && adapter.freshness === "fresh"
+        && (adapter.presentationState === "ready" || adapter.presentationState === "empty")
+        ? "当前没有可读取的旧场景、已批准版本或草稿。"
+        : statusText
     limitationText: "旧资源兼容只读；类型未确认。不生成新场景，不修改已保存版本。场景构建与类型确认能力尚未接入。"
     entries: adapter === null ? [] : adapter.marketScenarios.map(function(item) {
         return {

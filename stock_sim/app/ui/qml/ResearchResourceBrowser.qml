@@ -9,6 +9,7 @@ Item {
     required property var entries
     required property string statusText
     required property string limitationText
+    property string emptyMessage: statusText
     property var selectedEntry: null
     property var parentKeys: []
     property string navigationError: ""
@@ -224,7 +225,7 @@ Item {
                         Accessible.name: browser.title + "精确资源详情和限制"
                         Accessible.readOnly: true
                         text: (browser.navigationError.length ? browser.navigationError : browser.selectedEntry === null
-                            ? (browser.entries.length ? "从对象列表选择精确资源。" : "当前没有可读取的资源。")
+                            ? (browser.entries.length ? "从对象列表选择精确资源。" : browser.emptyMessage)
                             : browser.selectedEntry.details
                                 + (!browser.wide && browser.selectedEvidence.length ? "\n\n精确来源\n" + browser.selectedEvidence : ""))
                             + "\n\n" + browser.limitationText

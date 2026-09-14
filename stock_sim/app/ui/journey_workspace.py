@@ -3842,6 +3842,10 @@ class DiagnosticTasksQtAdapter(QObject):
             f"{task.configuration.content_identity.value}"
         )
 
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def hasRequestedTask(self) -> bool:  # noqa: N802
+        return self._context.task_id is not None
+
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def researchTaskResources(self) -> list[dict[str, str]]:  # noqa: N802
         """Read-only presentation of the explicitly selected legacy task."""
@@ -6202,6 +6206,10 @@ class EvidenceAndFindingsQtAdapter(QObject):
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def hasReliableData(self) -> bool:  # noqa: N802
         return self._state.last_reliable_data is not None
+
+    @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
+    def hasRequestedEvidence(self) -> bool:  # noqa: N802
+        return self.observed_selection() is not None
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def researchEvidenceResources(self) -> list[dict[str, object]]:  # noqa: N802

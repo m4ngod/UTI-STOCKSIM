@@ -318,6 +318,9 @@ def test_cold_scenario_wait_does_not_claim_a_reliable_previous_observation(live_
         assert catalog.property("count") == 0
         assert "正在读取场景资源" in page.property("statusText")
         assert "保留上次有效观察" not in page.property("statusText")
+        details = host.rootObject().findChild(QQuickItem, "researchScenarioPageDetails")
+        assert "当前没有可读取的资源" not in details.property("text")
+        assert "正在读取场景资源" in details.property("text")
         release.set()
         until(app, lambda: catalog.property("count") > 0
               and "正在读取" not in page.property("statusText"))
