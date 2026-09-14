@@ -4,7 +4,26 @@ Date: 2026-09-14. Ticket: https://github.com/m4ngod/UTI-STOCKSIM/issues/134.
 Parent: published specification #132 v1.0. Audited predecessor:
 `f354f0328ba33e10f98b8018e886d170c8d72c0d` (#133).
 
-## Latest drawer reflow and readonly Run accessibility increment
+## Latest native observation and accessible text repair
+
+The new owner task's official Computer Use entry now initializes and operates the
+real product. The historical initialization failures below no longer describe
+this task. Actual native checks exposed empty page/status accessible names and
+prompted the local repair `b16ddf7a4e3a6286443e551ec22c06392e4aa448`, which also
+fixes readonly and keyboard reading of the separate Combination details control.
+The affected four-module regression passes **110 cases**, and independent
+Standards/Spec reviews have no outstanding incremental findings. Native D3D11
+960x480/text200 confirms repaired names and exact-version keyboard reading.
+
+Accurate native focus and readonly-property observation remain unverified: the
+supported tool's focus field disagrees with visible behavior, and its readonly
+guard fails with CacheRequest 0x80070057. No whole-ticket PASS or closure follows.
+The full dimensions/state matrix is also unfinished. See the
+[native repair record](frontend-v21-issue134-native-names-progress.md) for exact
+inputs, hashes, red/green results, scope and remaining work. This supersedes the
+old tool-initialization status, while preserving earlier evidence and limitations.
+
+## Previous drawer reflow and readonly Run accessibility increment
 
 Fixed predecessor `e177bcebc52f59b456d9aff455ffdc1a98c17604`; test checkpoint
 `4ceacd32c6b3184ffa49260f442940030c87ba20`; final production/tests
