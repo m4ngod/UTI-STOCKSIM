@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPointF, Qt
-from PySide6.QtGui import QAccessible
+from PySide6.QtGui import QAccessible, QFont, QFontDatabase
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -37,6 +37,11 @@ EXACT_RUN_CONTEXT = RunMonitoringContext.for_run(RunMonitoringSelection(
 def research_host(tmp_path, monkeypatch, request):
     monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
     app = QApplication.instance() or QApplication([])
+    if not QFontDatabase.families():
+        # Isolated offscreen runs lack system font enumeration. Use the same
+        # existing CJK font as the other QML fixtures, within this process only.
+        assert QFontDatabase.addApplicationFont("C:/Windows/Fonts/msyh.ttc") >= 0
+        app.setFont(QFont("Microsoft YaHei UI", 10))
     context = build_app_context(
         settings_path=str(tmp_path / "settings.json"),
         run_monitoring_mode="fake", runtime_gateway=object(),
