@@ -7680,6 +7680,17 @@ class JourneyWorkspaceHost(QQuickWidget):
                 self._recovery_state = replace(
                     initial_recovery_state, safe_route=initial_route_identity,
                 )
+            if not self._route_availability[JourneyWorkspaceRoute.SYSTEM_HEALTH]:
+                previous = self._recovery_state
+                self._recovery_state = JourneyRecoveryState(
+                    JourneyRecoveryReason.UNAVAILABLE_ROUTE
+                    if previous.reason is JourneyRecoveryReason.EXACT else previous.reason,
+                    initial_route_identity,
+                    "系统状态观察不可用，未打开详情弹层。" + (
+                        "已恢复原页面。" if previous.reason is JourneyRecoveryReason.EXACT
+                        else previous.explanation
+                    ),
+                )
         elif (
             initial_route_identity is requested_initial_route
             and initial_recovery_state is not None

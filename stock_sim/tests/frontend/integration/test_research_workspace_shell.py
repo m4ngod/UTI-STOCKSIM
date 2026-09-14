@@ -60,7 +60,9 @@ def research_host(tmp_path, monkeypatch, request):
             diagnostic_setup_selection_coordinator=context.diagnostic_setup_selection_coordinator,
             evidence_feature=context.evidence_and_findings_feature,
             evidence_context=context.evidence_and_findings_context,
-            system_health_feature=context.system_health_feature,
+            system_health_feature=(
+                context.system_health_feature if options.get("health_available", True) else None
+            ),
             system_health_context=context.system_health_context,
             initial_route=options.get("initial_route", "strategy_library"),
             accessibility_preferences=AccessibilityPreferences(
@@ -190,10 +192,30 @@ def test_initial_health_entry_uses_saved_parent_or_explained_combination_fallbac
 
 
 @pytest.mark.parametrize("research_host", [
+    {"initial_route": "system_health", "health_available": False,
+     "bookmark": JourneyWorkspaceBookmark(last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH)},
+    {"initial_route": "system_health", "health_available": False,
+     "bookmark": JourneyWorkspaceBookmark(last_route=JourneyWorkspaceRoute.SCENARIO_LAB)},
+], indirect=True)
+def test_initial_missing_health_explains_its_unavailability_even_with_a_safe_parent(research_host):
+    _, _, host = research_host
+    root = host.rootObject()
+    assert host.active_route is not JourneyWorkspaceRoute.SYSTEM_HEALTH
+    assert root.findChild(QObject, "researchHealthPopup").property("opened") is False
+    assert host.recovery_state.reason.value != "exact"
+    assert "系统状态观察不可用" in host.recovery_state.explanation
+    assert "已映射" not in host.recovery_state.explanation
+    assert root.property("routeRecoveryMessage") == host.recovery_state.explanation
+    assert root.findChild(QQuickItem, "researchHealthButton").isVisible()
+
+
+@pytest.mark.parametrize("research_host", [
     {"size": (960, 480), "text_scale": 2.0},
     {"size": (1426, 786), "text_scale": 1.0},
 ], indirect=True)
-def test_health_overlay_supports_readonly_keyboard_reading_and_modal_focus(research_host):
+def test_health_overlay_supports_readonly_keyboard_reading_and_modal_focus(
+    research_host, record_property,
+):
     _, _, host = research_host
     assert host.activate_route(JourneyWorkspaceRoute.SYSTEM_HEALTH)
     QTest.qWait(30)
@@ -210,6 +232,17 @@ def test_health_overlay_supports_readonly_keyboard_reading_and_modal_focus(resea
     cursor = facts.property("cursorRectangle")
     bottom = facts.mapToScene(QPointF(cursor.x(), cursor.bottom())).y()
     assert 0 < bottom <= host.height()
+    scale = root.findChild(QObject, "designTokens").property("textScale")
+    record_property("logical_client", f"{host.width()}x{host.height()}")
+    record_property("dpr", host.devicePixelRatioF())
+    record_property("text_scale", scale)
+    record_property("keyboard_text_end_visible", True)
+    if evidence_dir := os.environ.get("STOCKSIM_QML_EVIDENCE_DIR"):
+        destination = Path(evidence_dir)
+        destination.mkdir(parents=True, exist_ok=True)
+        frame = host.grabFramebuffer()
+        assert not frame.isNull()
+        assert frame.save(str(destination / f"health-keyboard-{host.width()}x{host.height()}-{scale}.png"))
     QTest.keyClick(host.quickWindow(), Qt.Key.Key_Tab)
     assert close.hasActiveFocus()
     QTest.keyClick(host.quickWindow(), Qt.Key.Key_Backtab)
