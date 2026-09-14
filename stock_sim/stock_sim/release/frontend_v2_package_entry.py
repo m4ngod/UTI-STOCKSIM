@@ -485,6 +485,7 @@ def _create_production_window(
     *,
     event_bridge: Any,
     settings_path: Path,
+    research_shell: bool = False,
     runtime_gateway: Any | None = None,
     strategy_diagnostics_application: Any | None = None,
     strategy_diagnostics_read_model: Any | None = None,
@@ -523,6 +524,8 @@ def _create_production_window(
     window = None
     try:
         window = MainWindow(
+            research_shell=research_shell,
+            layout_path="layout_v21.json" if research_shell else "layout_main.json",
             strategy_library_queries=getattr(context, "strategy_library_queries", None),
             feature_capabilities=(context.feature_capabilities()
                                   if callable(getattr(context, "feature_capabilities", None)) else None),
@@ -5192,7 +5195,7 @@ def _write_smoke_report(
     )
 
 
-def _run_interactive() -> int:
+def _run_interactive(*, research_shell: bool = False) -> int:
     from PySide6.QtWidgets import QApplication
 
     from app.event_bridge import (
@@ -5205,9 +5208,12 @@ def _run_interactive() -> int:
     os.environ["STOCKSIM_FRONTEND_V2"] = "1"
     context, window, _host = _create_production_window(
         event_bridge=bridge,
-        settings_path=Path("frontend-v2-settings.json"),
+        settings_path=Path("frontend-v21-settings.json" if research_shell else "frontend-v2-settings.json"),
+        research_shell=research_shell,
     )
     window.resize(1024, 640)
+    if research_shell:
+        app.aboutToQuit.connect(context.close)
     app.aboutToQuit.connect(context.strategy_library_feature.close)
     app.aboutToQuit.connect(context.scenario_lab_feature.close)
     app.aboutToQuit.connect(context.diagnostic_tasks_feature.close)
@@ -5914,6 +5920,8 @@ def _compiled_smoke_failures(
 def main(argv: Sequence[str] | None = None) -> int:
     raw_arguments = tuple(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument("--research-shell", action="store_true",
+                        help="open the opt-in V2.1 four-page research workspace")
     parser.add_argument(
         "--renderer-lane",
         choices=tuple(lane.value for lane in RendererLane),
@@ -5960,6 +5968,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if len(report_modes) > 1:
         parser.error("installed certification report modes are mutually exclusive")
+    if arguments.research_shell and report_modes:
+        parser.error("--research-shell cannot use the legacy Wave 4 certification report modes")
     renderer_lane = RendererLane(arguments.renderer_lane)
     configure_renderer_environment(renderer_lane)
     if arguments.installed_dpi_preflight_report is not None:
@@ -6099,7 +6109,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 1
         return 0
-    return _run_interactive()
+    return _run_interactive(research_shell=True) if arguments.research_shell else _run_interactive()
 
 
 def _run_process_entry(

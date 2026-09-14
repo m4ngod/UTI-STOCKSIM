@@ -5,6 +5,7 @@ Usage (after install or via python -m):
 
 Options:
   --headless   Run without GUI event loop (for CI / tests)
+  --research-shell  Open the opt-in V2.1 four-page research workspace
   --lang XX    Set initial language (default zh_CN)
   --theme THEME  Set initial theme (default light)
 """
@@ -33,9 +34,9 @@ except Exception as e:  # pragma: no cover
 
 _DEBUG_GUI_START = os.environ.get("STOCKSIM_DEBUG_GUI_START", "").strip().lower() in {"1", "true", "yes", "on"}
 
-def _init_settings(lang: str, theme: str):
+def _init_settings(lang: str, theme: str, *, path: str = "frontend_settings.json"):
     # 临时 settings.json 放在当前目录 (可扩展为 XDG 路径)
-    store = SettingsStore(path="frontend_settings.json", auto_save=False)
+    store = SettingsStore(path=path, auto_save=False)
     # 仅在不同才更新
     changes = {}
     if store.get_state().language != lang:
@@ -47,12 +48,16 @@ def _init_settings(lang: str, theme: str):
 def parse_args(argv: Optional[list[str]] = None):
     p = argparse.ArgumentParser(prog="frontend-trading-ui", add_help=True)
     p.add_argument("--headless", action="store_true", help="run without GUI event loop")
+    p.add_argument("--research-shell", action="store_true", help="open the opt-in V2.1 four-page research workspace")
     p.add_argument("--check-db", action="store_true", help="check database connectivity and schema, then exit")
     p.add_argument("--skip-db-check", action="store_true", help="skip startup database health check")
     p.add_argument("--require-postgres", action="store_true", help="fail unless the configured database is PostgreSQL")
     p.add_argument("--lang", default="zh_CN", help="initial language")
     p.add_argument("--theme", default="light", help="initial theme")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.research_shell and args.headless:
+        p.error("--research-shell requires the GUI entry, not --headless")
+    return args
 
 
 def _database_check_enabled(*, headless: bool, skip: bool) -> bool:
@@ -80,7 +85,7 @@ def _run_database_check(*, ensure_schema: bool = True, require_postgres: bool = 
     print(f"database {format_database_health(health)}", file=sys.stderr)
     return 0 if health.ok else 3
 
-def _start_frontend(*, headless: bool):
+def _start_frontend(*, headless: bool, research_shell: bool = False):
     """Entry-local startup wrapper.
 
     Product-entry rule:
@@ -96,18 +101,28 @@ def _start_frontend(*, headless: bool):
 
     # Real GUI path must explicitly opt into real Qt widgets.
     os.environ.setdefault("STOCKSIM_ENABLE_REAL_UI", "1")
+    if research_shell:
+        os.environ["STOCKSIM_FRONTEND_V2"] = "1"
+        os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
+        # The research runtime starts Qt before composing its application,
+        # retaining that full interval for first-projection measurement.
+        app = QApplication.instance() or QApplication([])
     event_bridge = start_frontend_bridge()
-    context = reset_app_context(event_bridge=event_bridge)
-    start_runtime_support_services()
+    context = (reset_app_context(event_bridge=event_bridge, settings_path="frontend-v21-settings.json")
+               if research_shell else reset_app_context(event_bridge=event_bridge))
+    if not research_shell:
+        start_runtime_support_services()
 
-    register_builtin_panels()
-    try:
-        register_ui_adapters()
-    except Exception as e:
-        if _DEBUG_GUI_START:
-            print(f"[frontend-start] register_ui_adapters failed: {e!r}", file=sys.stderr)
-        raise
+        register_builtin_panels()
+        try:
+            register_ui_adapters()
+        except Exception as e:
+            if _DEBUG_GUI_START:
+                print(f"[frontend-start] register_ui_adapters failed: {e!r}", file=sys.stderr)
+            raise
     app = QApplication.instance() or QApplication([])
+    if research_shell:
+        app.aboutToQuit.connect(context.close)
     try:
         app.aboutToQuit.connect(stop_frontend_bridge)  # type: ignore[attr-defined]
         strategy_library_feature = getattr(
@@ -149,6 +164,9 @@ def _start_frontend(*, headless: bool):
     except Exception:
         pass
     mw = MainWindow(
+        research_shell=research_shell,
+        frontend_v2_enabled=True if research_shell else None,
+        layout_path="layout_v21.json" if research_shell else "layout_main.json",
         strategy_library_queries=getattr(context, "strategy_library_queries", None),
         feature_capabilities=(context.feature_capabilities()
                               if callable(getattr(context, "feature_capabilities", None)) else None),
@@ -263,8 +281,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         rc = _run_database_check(ensure_schema=True, require_postgres=require_postgres)
         if rc != 0:
             return rc
-    store, changes = _init_settings(args.lang, args.theme)
-    mw = _start_frontend(headless=args.headless)
+    if args.research_shell:
+        store, changes = _init_settings(args.lang, args.theme, path="frontend-v21-settings.json")
+        mw = _start_frontend(headless=False, research_shell=True)
+    else:
+        store, changes = _init_settings(args.lang, args.theme)
+        mw = _start_frontend(headless=args.headless)
     # 注意：GUI 路径已在 _start_frontend() 内完成默认预加载。
     # 这里不再重复 open_panel()，避免同一面板被 workspace/dock 双重挂载，
     # 生成一组有内容、一组空白的重复工作区项。
