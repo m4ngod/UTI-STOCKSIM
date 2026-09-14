@@ -355,7 +355,9 @@ def test_archive_clears_old_details_when_the_exact_reference_becomes_invalid(res
         feature.replay_scripted_state(selection, failure)
         until(app, lambda: catalog.property("count") == 0)
         assert record.identity.value not in details.property("text")
-        assert "当前没有可读取的资源" in details.property("text")
+        assert "所选精确证据引用已失效" in details.property("text")
+        assert "当前没有可读取的资源" not in details.property("text")
+        assert "尚未选择旧运行的证据" not in details.property("text")
         page = host.rootObject().findChild(QQuickItem, "researchArchivePage")
         assert failure.error.message in page.property("statusText")
         assert details.hasActiveFocus()
@@ -633,7 +635,9 @@ def test_archive_related_focus_tracks_reliable_source_or_falls_back_on_invalidat
         app.processEvents()
         details = root.findChild(QQuickItem, "researchArchivePageDetails")
         if source_state == "invalid":
-            assert "当前没有可读取的资源" in details.property("text")
+            assert "精确来源已失效" in details.property("text")
+            assert "当前没有可读取的资源" not in details.property("text")
+            assert "尚未选择旧运行的证据" not in details.property("text")
             parent_control = root.findChild(QQuickItem, "researchArchivePageListButton") if compact else catalog
             assert parent_control.hasActiveFocus() and parent_control.isVisible()
         else:
