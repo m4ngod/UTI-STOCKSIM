@@ -47,7 +47,9 @@ Archive drill-down is now implemented at f0e0ef0 with original comparisons and
 findings, exact related-object navigation (including same-package cross-candidate
 references), and reversible key-based returns. Its first combined run passes 107
 cases and the old Evidence route separately passes 4. Follow-up return-focus and
-scroll fixes are tracked in `frontend-v21-issue134-archive-drilldown-progress.md`;
+scroll fixes at 231748a pass **109 cases**; both independent review axes confirmed
+their identified issues resolved. Details are tracked in
+`frontend-v21-issue134-archive-drilldown-progress.md`;
 native/startup and remaining shell gates below are not waived.
 
 ## Evidence recorded so far

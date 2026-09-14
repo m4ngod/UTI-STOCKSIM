@@ -97,7 +97,7 @@ Journey Rail). Its SHA-256 is
 The 6 comparison/finding/cross-candidate navigation cases record actual client,
 DPR, text scale and evidence package. Their links expose accessible names,
 button roles, focusable/enabled state and on-client geometry. Independent review
-is pending for this checkpoint. QAccessible and offscreen screenshots do not
+and the resulting fixes are recorded below. QAccessible and offscreen screenshots do not
 substitute for native Windows UIA, Narrator, or the full physical-DPI matrix.
 
 The separate unchanged legacy Evidence route is also green:
@@ -126,9 +126,13 @@ It correctly identified three scroll behaviors requiring actual input validation
 long-text keyboard navigation after wrapping TextArea in a Column; retaining an old
 scroll offset when selecting another resource; and cutting off a focused link by
 shrinking height without changing width. Main-task follow-up tests then confirmed
-these behavior gaps. Their fixes and evidence are below; final independent
-classification/recheck is pending, so the initial zero count is not presented as
-final acceptance of the follow-up.
+these behavior gaps. The final reviewer classified 2 hard ADR0039 violations:
+unusable long-detail keyboard reading and a focused link outside the reduced
+viewport; plus 1 judgmental Duplicated Code smell: catalogue selection and related
+selection had diverged in scroll-reset behavior. It independently rechecked
+231748a and confirmed all three resolved, with no new problem. The scroll-reset
+fix did not require a speculative abstraction. The preliminary zero count is
+superseded by these evidence-backed findings, not used as a final conclusion.
 
 ### Spec
 
@@ -139,7 +143,14 @@ compact tests both require the visible parent list or list trigger. The shared
 `focusParent()` path now handles missing returns as well as removed focused links.
 `archive-review-parent-return-red.xml`: 4 failures; then
 `archive-review-parent-return-green.xml`: 14 relevant navigation cases pass.
-Independent recheck is pending for this tested fix.
+The Spec reviewer independently rechecked the fixed nonempty follow-up range
+`git diff f0e0ef0d00189a067e492ee4777e50847a4553f8...231748a0865f4abd1d27e0d43505fe41a8efc1e5`.
+It confirmed the P2 resolved and no new deviation; this was read-only, not a test
+rerun or whole-ticket PASS.
+
+Review summary: Standards 2 hard-standard findings and 1 judgmental smell,
+all resolved; Spec 1 P2 resolved. Zero outstanding new findings in either axis.
+Neither conclusion substitutes for remaining #134 or native acceptance.
 
 ### Scroll red/green evidence
 
@@ -164,6 +175,12 @@ Independent recheck is pending for this tested fix.
 - Final follow-up combined run: `archive-review-fixes-full-regression.xml`,
   **109 passed in 86.80 s**, no warnings (31 resource, 14 shell, 39 exact-inspector,
   25 Journey Rail cases), including all three reopened sealed-file live reads.
+  SHA-256: `8C5FE801E091B77A6A9E3DB592DCCAB06B5C2ED831707CD40564E770DFAD190B`.
+- Post-commit 231748a visual rerun `archive-reviewed-source-frames.xml`: 2 passed
+  in 3.18 s at normal/compact sizes. The new compact frame in `archive-review-frames/`
+  was inspected: after reading the tail and selecting a different long finding,
+  the new exact identity starts inside the visible scroll region. Report SHA-256:
+  `51B4843BB693A6D39C5B46152464707F9E7FE54234BB6E2A8DDC6E54512054D3`.
 
 | Before | After | Why |
 | --- | --- | --- |
