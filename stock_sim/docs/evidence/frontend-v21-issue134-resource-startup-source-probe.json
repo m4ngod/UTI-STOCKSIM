@@ -1,0 +1,61 @@
+{
+  "schema": "frontend-v21-source-startup-progress/1.0",
+  "source_commit": "6d33e7175d04829e83b5b5c87755798f9cf49a31",
+  "specification_sha256": "A4D64B033E55DCD5203B6204AA01932501EEBD06AE55BAB45EDF2FCDF48C839E",
+  "scope": "Source-composed MainWindow with research_shell=true after resource projection and invalid-reference fix; not normal/package entry or formal acceptance",
+  "input": {
+    "mode": "live",
+    "initial_page": "Combination Library",
+    "assets": 2,
+    "source_revision": "8f06a93633f2900a113683aab275512a7bfccff53b8b82a9f8a76ab5c72f1e03",
+    "settings": "New per-process independent directory",
+    "qml_disk_cache": "disabled",
+    "os_cache_state": "not cleared or controlled",
+    "logical_client": [1426, 786],
+    "platform": "Windows",
+    "font_family": "Microsoft YaHei UI"
+  },
+  "protocol": {
+    "clock": "perf_counter_ns",
+    "origin": "runtime_entry_before_qapplication",
+    "endpoint": "afterRendering of a synchronized visible frame with both real catalog rows and fresh ready public query state",
+    "threshold_ms": 750.0,
+    "formal_gate": "NOT_EVALUATED_SOURCE_PROBE_ONLY",
+    "source_threshold_result": "BOTH_OVER_TARGET",
+    "probe_sha256": "3B5D2A1930FE51C754A0F39779882B614EC0F021BD30E2D1C29D129A16B32F1B"
+  },
+  "observations": [
+    {
+      "renderer": "Software",
+      "pid": 280008,
+      "dpr": 1.5,
+      "runtime_entry_ns": 767306654911200,
+      "first_visible_frame_ns": 767307446629600,
+      "usable_frame_ns": 767307551359000,
+      "usable_state_ms": 896.4478,
+      "script_to_usable_ms": 1651.7673,
+      "raw_report": "startup-resources-software-1/report.json",
+      "raw_report_sha256": "8CAE36896E7436A88EF74186A5B2CC5BAE1ABD7A54DB57000317AD2277E606C5"
+    },
+    {
+      "renderer": "Direct3D11",
+      "pid": 299484,
+      "dpr": 1.0,
+      "runtime_entry_ns": 767333381805400,
+      "first_visible_frame_ns": 767334265737900,
+      "usable_frame_ns": 767334397696100,
+      "usable_state_ms": 1015.8907,
+      "script_to_usable_ms": 1784.1846,
+      "raw_report": "startup-resources-d3d11-1/report.json",
+      "raw_report_sha256": "790E0731D78E7610EE31C88BBC2B9883765738AC8665B5ED42CAA15FE61644CA"
+    }
+  ],
+  "limitations": [
+    "One retained new-process sample per renderer, not a percentile or performance-regression verdict",
+    "Actual DPR differed between runs; no system display setting was changed and these samples are not an equal-DPR comparison",
+    "Only initial Combination resources timed; other page first projections and genuine empty-resource states are not timed",
+    "No installed-package, controlled-cold-cache, resource-budget, native UIA, Narrator or physical-DPI-matrix acceptance",
+    "A fresh ready state with zero rendered rows was excluded from the usable endpoint",
+    "Captured first-usable frames were inspected and show the real two-row catalogue; no full visual acceptance claimed"
+  ]
+}

@@ -122,10 +122,14 @@ Interface, string-error classification or persistence schema was introduced.
 target error visible and detail focus retained. A separate regression drives
 completed -> disconnected -> partial -> recovered and checks that the same
 selection remains, its availability updates and its reliable content returns.
-Reviewer recheck of this fix is pending at this checkpoint.
+Both agents independently rechecked the fixed, nonempty increment
+`git diff fbc915a43413419d31331c89f41963e04647f157...6d33e7175d04829e83b5b5c87755798f9cf49a31`.
+Standards maintained zero findings and found no new hard violation or concrete
+smell. Spec confirmed the P2 resolved with no new deviation. These were read-only
+rechecks, not independent test runs or live invalidation/native certification.
 
-Review summary: Standards 0 findings; Spec 1 P2 with a tested local fix, pending
-independent recheck. Neither axis grants a whole-ticket PASS.
+Review summary: Standards 0 findings; Spec 1 P2 resolved, zero outstanding new
+findings after recheck. Neither axis grants a whole-ticket PASS.
 
 | Before | After | Why |
 | --- | --- | --- |
@@ -154,12 +158,31 @@ SHA-256 bindings:
 | `resource-pages-legacy-routes.xml` | `11D169428A684C01C6C4BAFABAFA9F76384C690E418F92E833C05A7A69987220` |
 | `resource-invalid-reference-red.xml` | `A060B909B80B408D5B399BB248F38A75FD57CE8C14394F7175376960146A4047` |
 | `resource-invalid-reference-green.xml` | `6C8577F2B8B798FAC5FCE93969A8CE4F88E0FBE12BE7CF4600343BAA6B4F4A22` |
+| `resource-review-fixes-full-regression.xml` | `875DE312A6C9B9DE044D7E63A9C13175093432CB4A7B9EBC023D425765DD8BC0` |
+
+## Current-source native startup diagnostics
+
+The same source-only probe was rerun on the committed fix
+`6d33e7175d04829e83b5b5c87755798f9cf49a31`, with a separate new process and
+settings/data directory per renderer. Software observed the actual fresh two-row
+frame at **896.4478 ms, DPR 1.5**; Direct3D11 at **1015.8907 ms, DPR 1.0**.
+Both exceed 750 ms. Differing actual DPR and one sample each prohibit an equal-DPR
+renderer comparison or a performance regression/improvement conclusion. No display
+settings were changed. Both probes exited 0 because a usable frame was captured,
+not because the speed gate passed. Captured frames were inspected.
+
+Exact clocks, source/input revisions, report hashes and limitations are in
+`frontend-v21-issue134-resource-startup-source-probe.json`. As before, a ready
+public state with zero rendered rows was excluded. Only the initial Combination
+page was timed; these measurements do not certify the other page projections or
+the empty-resource, packaged-entry and controlled-cold-start requirements.
 
 ## Outstanding local gates
 
-The first native startup samples still refer to a07793c, not this changed shell;
-they exceeded 750 ms. This resource checkpoint has NOT passed new dual-renderer
-cold-start or first-usable-frame timing, native UIA or installed-package gates.
-Empty/error/waiting resource states, observation disposal/real running continuity,
+Both old a07793c and current 6d33e71 source samples exceed 750 ms. This resource
+checkpoint has NOT passed formal dual-renderer cold-start or first-usable-frame
+timing, native UIA or installed-package gates. Fake invalidation and transient
+retention now have local evidence; the full live empty/error/waiting and exact
+context-switch matrix still needs verification. Observation disposal/real running continuity,
 health routing and complete semantic recovery still need ticket-local evidence.
 The inherited global goal and all remaining tickets are unchanged.

@@ -23,7 +23,7 @@ unchanged. No release, main-branch merge or public upload is part of this checkp
   overlay displays the six existing fact categories; Escape returns to its trigger
   without changing the observed route. Unknown is not presented as healthy.
 - The legacy six-route QML entry and Widgets rollback are unchanged by default.
-  The new shell is **not yet the normal application/package entry**. The next
+  The new shell is **not yet the normal application/package entry**. The current
   resource checkpoint replaces status-only Scenario/Lab/Archive surfaces with
   exact read-only resource browsers, as detailed in
   `frontend-v21-issue134-resource-pages-progress.md`. These remain incomplete
@@ -33,6 +33,15 @@ Visual direction: restrained dark work surface, clear row selection and precise
 identity text, no card mosaic or decorative motion. Content order: navigation,
 current resource identity/status, explicit read action, details and limitations.
 Frequent navigation and keyboard/drawer actions have no transition delay.
+
+Latest local resource checkpoint: fbc915a, followed by invalid-reference fix
+6d33e71. The final combined offscreen run passes 92 cases; separate old Scenario,
+Task and Evidence route coverage passes 38. Resource increment Standards review:
+0 findings. Spec review: 1 P2 fixed and independently rechecked. The latest source
+startup samples bind to 6d33e71, not the earlier a07793c: Software 896.4478 ms
+(DPR 1.5), Direct3D11 1015.8907 ms (DPR 1.0), both over 750 ms, with no equal-DPR
+comparison or formal acceptance claim. See the resource progress document and
+`frontend-v21-issue134-resource-startup-source-probe.json` for exact evidence.
 
 ## Evidence recorded so far
 
