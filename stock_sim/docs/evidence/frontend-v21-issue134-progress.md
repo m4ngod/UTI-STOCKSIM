@@ -4,6 +4,28 @@ Date: 2026-09-14. Ticket: https://github.com/m4ngod/UTI-STOCKSIM/issues/134.
 Parent: published specification #132 v1.0. Audited predecessor:
 `f354f0328ba33e10f98b8018e886d170c8d72c0d` (#133).
 
+## Latest exact-observation increment
+
+Local source `b05f62e`, review correction `2d11870`: exact Run/Evidence remount
+probes are now permanent; health identifies the observed Campaign member, excludes
+another Run's retained evidence, and does not adopt an unselected default Task.
+For an unrelated Campaign it clears the health association, explicitly explains
+system-only facts, preserves both page selections and restores the Task association
+on return to Lab. No Feature Interface or execution owner changed.
+
+Final fixed-source regression: **249 passed**, 442.44 s console, zero failures,
+errors or skips; actual source `2d11870fbd7d93aa032dae580882a67a1dfeaeee`.
+Offscreen Software health frames record 1426×786/100% and 960×480/200%, DPR 1.0,
+read-only accessible values, keyboard-to-end reading and Escape focus return.
+They are not native Windows DPI, Narrator or full visual acceptance.
+
+Two independent review axes confirmed their cross-Campaign P2 resolved with no
+new findings. Detailed scope, failing reports retained without relabelling,
+targeted regression and source-bound final evidence are maintained in
+`frontend-v21-issue134-health-routing-progress.md`. The previous full-Host blocking
+failure in the historical section below is resolved for the tested Scenario,
+exact Run and Evidence remount paths; all-case continuity is not certified.
+
 ## Scope of this checkpoint
 
 This is an unfinished implementation checkpoint. #134 remains OPEN and none of

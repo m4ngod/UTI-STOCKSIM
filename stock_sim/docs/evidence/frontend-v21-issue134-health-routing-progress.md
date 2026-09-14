@@ -4,6 +4,146 @@ Date: 2026-09-14. This is implementation progress, **not ticket acceptance**.
 The full #133–#171 goal remains active. No remote publication, main merge,
 release, production-default switch or system configuration change was performed.
 
+## Exact-observation increment — 2026-09-14
+
+Predecessor `571904c94ccd2d3a99bf83acb8d771216a3ca340`; initial source
+`b05f62edf2ef443c33990bd551eb242373c7e91b`. This increment addresses public
+research observation and the existing SystemHealth 1.0 context. It does not
+introduce the successor Feature 1.1 contract or certify all D14 requirements.
+
+- Research Task projection requires an explicit Task identity. A new Host with
+  no Task selection does not display the Feature's default most-recent Task or
+  inherit its health association. One adapter observation policy covers reads,
+  commands and handoffs; legacy default Task behavior remains unchanged.
+- Health follows the explicitly observed Run or Evidence member of a Campaign,
+  not the Task's default handoff member. Hidden Archive evidence from a different
+  Run is excluded from the health identity graph, without changing the Archive's
+  own retained selection. Returning to that Archive restores its exact manifest.
+- The read-only popup exposes its exact associated Task/configuration/Run facts.
+  State and impact precede the concise observation; complete version identities
+  remain at the end for keyboard reading and copying. This restrained ordering
+  follows the UI skills without adding cards, controls or motion. The existing
+  technical-language density and native scroll appearance are not final visual
+  acceptance.
+- The permanent `test_research_exact_observation.py` promotes the earlier two
+  exact-entry remount probes and adds six health cases. It uses real AppContext,
+  live Features, persisted records, public typed Host entries and actual QML
+  content/input. Explicit application advance prepares completed Campaign A;
+  the independent active Task B uses one real public Start. This is not proof
+  of an automatic campaign scheduler or all generation-3 recovery paths.
+
+Initial source evidence, retained under the scratch root below:
+
+| Behavior | Red | Green |
+| --- | --- | --- |
+| Actual popup includes exact Task/configuration identity | `health-exact-scope-visible-red.xml`: 2 failed | `health-exact-scope-visible-green.xml`: 2 passed |
+| Same-Campaign non-default Run/Evidence association | `health-observed-member-red.xml`: 2 failed | `health-observed-member-green.xml`: 2 passed |
+| New unselected Host does not adopt the previous Task | `health-cleared-observation-probe.xml`: 1 failed | `health-cleared-observation-green.xml`: 1 passed |
+| Another Run's retained manifest is not joined to current health | `health-cross-run-evidence-red.xml`: 1 failed | `health-cross-run-evidence-green.xml`: 1 passed, 13.045 s JUnit |
+
+`health-exact-observation-targeted-reviewed.xml`: **8 passed**, 48.580 s JUnit.
+Painted QML frames in `health-exact-frames-reviewed/` record logical clients
+1426×786 at text 100% and 960×480 at text 200%, both DPR 1.0. QAccessible exposes
+readOnly and the exact Task in Value. Ctrl+End reaches the actual final cursor
+inside the client; Escape returns focus. These are offscreen Software frames,
+not native UIA, Narrator, physical DPI, Direct3D11 or startup evidence.
+`health-explicit-selection-compatibility.xml`: **50 passed**, 209.83 s console,
+covering retained Task journeys and research resource pages. Its nine warnings
+are JUnit family/record_property compatibility warnings; the combined run uses
+the legacy JUnit family explicitly.
+
+The intermediate `health-exact-observation-targeted.xml` has 2 failures and
+5 passes from a test-fixture refactor's missing local variable, subsequently
+corrected. It is not a product red and has not been overwritten or relabelled.
+
+| Initial artifact | SHA-256 |
+| --- | --- |
+| `health-exact-observation-targeted-reviewed.xml` | `0D38F9E4F94F4AE960E8B4CFA95414FF70B1AFD5EA23715B172A73D2711EE5E4` |
+| `health-explicit-selection-compatibility.xml` | `0346506EF7A8946AB6AFD52FDD3E7C92F4AFBEFC896411421B524C9905E19FE6` |
+| `health-cross-run-evidence-red.xml` | `2A89F4004BA44A49D166D6774DC0A6FE8814DA3E7011B90B63295E84DB4A0943` |
+| `health-cross-run-evidence-green.xml` | `117EC96543EA2F55BE6F130AF1689CF3B38466D32B299B4D34E2C04BE674A804` |
+
+### Cross-Campaign review correction
+
+Both independent review axes identified a P2: an incompatible retained Task
+could still be shown as the active association. Public live reproducer
+`health-unrelated-campaign-review-red.xml` failed at both Run and Evidence
+entries, with the unrelated Task visible in the actual popup facts.
+
+Source `2d11870fbd7d93aa032dae580882a67a1dfeaeee` now returns no association
+when Campaign identities differ and explicitly applies an empty typed health
+context. Existing context/generation guards reject old deliveries. The popup
+explains that no verifiable Task association exists and only system-level facts
+are shown. This does not rewrite Lab, Run or Archive selections; returning to
+Lab establishes its explicitly retained Task association again.
+
+Two permanent public regression cases now cover this transition and return,
+bringing the exact-observation module to **10 cases**. Independent Task approval
+preparation is shared with the remount cases; no new production helper or command
+was introduced. `health-cross-campaign-review-targeted-green.xml`: **35 passed**
+in 76.06 s, combining all 10 exact cases and 25 retained Journey Rail cases.
+
+The initial combined source report `health-exact-observation-full-regression.xml`
+has **246 passed, 1 failed**, 398.37 s console (398.300 s JUnit), not a full pass.
+Its failure is an existing internal-helper unit fixture's missing mode field.
+The fixture now explicitly states legacy mode; all its identity and revision
+assertions remain unchanged. No production getattr/debug accommodation was added.
+The new behavior tests continue to use public Feature/Host and actual QML seams.
+
+| Review artifact | SHA-256 |
+| --- | --- |
+| `health-unrelated-campaign-review-red.xml` | `A2571A361A249978179BD36962A94B57DCB4058F0DD1A6A85119A11DA06582F3` |
+| `health-cross-campaign-review-targeted-green.xml` | `C4D05DE4AAF30EC2B886A513375E36A6B7F78CBB8FCBAE78E115D9DAAE1E0817` |
+| `health-exact-observation-full-regression.xml` | `0CD63EBD533C616B2803E54528DA00A7AC6C70DF2A7264B9236B9FAB3D5A38D5` |
+
+### Final source-bound regression
+
+On unchanged committed source `2d11870fbd7d93aa032dae580882a67a1dfeaeee`,
+`health-exact-observation-reviewed-full-regression.xml` reports **249 passed**,
+442.44 s console (442.336 s JUnit), zero failures, errors and skips. Only evidence
+documents were edited during the run. Python 3.11.9 / PySide6 6.9.1, isolated
+offscreen Software, no production data or settings. Counts: 10 exact observation,
+12 execution continuity, 25 research shell, 31 research resources, 25 Journey
+Rail, 12 Journey workspace, 21 exact-query contract, 39 inspector, 19 Tasks,
+15 Scenario, 8 Strategy, 30 health and 2 live Run-to-Evidence cases.
+
+Final painted frames were inspected from `health-exact-frames-final/` and retain
+the previously described actual client/DPR/text-scale and keyboard checks. At
+960×480/200% long facts require scrolling; Ctrl+End reaches the end and Escape
+returns focus. This is readable/reachable evidence, not final content-density
+or native visual approval. The same native/startup limitations still apply.
+
+| Final artifact | SHA-256 |
+| --- | --- |
+| `health-exact-observation-reviewed-full-regression.xml` | `0357C5F28B90EF09E0E6C10C4AF27B31F5201DF3F78C7E934D14FA5547D9D638` |
+| `health-exact-frames-final/health-exact-scope-1426x786-1.0.png` | `8FF619A9D08D0EA5EADB5DF68D5B77E01110E47409562EF78866E6D44122AE5B` |
+| `health-exact-frames-final/health-exact-scope-960x480-2.0.png` | `5688461195F7EF66BCAB8E48CA6C45FCF5E4F8CB219230ADAE0CA031799EC4F6` |
+
+### Standards
+
+The initial cross-Campaign P2 violates ADR0036 exact observation and ADR0042
+affected-work scope. Independent recheck of verified nonempty
+`571904c...2d11870` confirms it resolved; zero new hard-standard violations and
+zero new concrete heuristic smells. Clearing health leaves the other page
+selections and legacy branch intact. Existing unit-fixture clarification and
+shared public approval preparation do not weaken the assertions.
+
+### Spec
+
+The independent initial P2 concerns D10 late/cross-object contamination and D14
+current impact. Recheck of the same fixed range confirms it resolved with no
+new deviation. The applied empty context and old-generation rejection also
+respect D02. Both axes read source and assertions only; neither independently
+reran tests or certified the entire ticket.
+
+Review summary: Standards 1 P2 resolved, 0 new; Spec 1 P2 resolved, 0 new. These
+are independent assessments of the same defect, not two distinct product bugs.
+
+Top-level visible freshness/priority impact, complete per-group observation age,
+generation-3 durable recovery, broader native reflow/UIA/focus, normal/package
+entry and cold-start gates remain unfinished. This local increment does not
+waive or pass any of those obligations.
+
 ## Source and scope
 
 - Fixed predecessor: `b662dc73f9c7c5620da605f39e6890a19262c517`.

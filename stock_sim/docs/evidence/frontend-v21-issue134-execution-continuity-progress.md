@@ -4,6 +4,26 @@ Date: 2026-09-14. This is local implementation progress, **not ticket acceptance
 The full #133–#171 goal remains active. No #134 push, PR, main merge, release,
 production-default switch, paid AI invocation or system settings change occurred.
 
+## Permanent exact-entry follow-up
+
+The separate exact-entry probe described below is now permanent in
+`tests/frontend/integration/test_research_exact_observation.py`, introduced by
+`b05f62edf2ef443c33990bd551eb242373c7e91b` and reviewed/fixed at
+`2d11870fbd7d93aa032dae580882a67a1dfeaeee`. Both exact Run A and Evidence A
+remount while independent Task B is executing; health keyboard return and pinned
+observation before/after B's real one-case completion are asserted. Completed
+Campaign A is explicitly prepared by public advance, not an automatic scheduler.
+
+The same module now also covers exact health identity, same-Campaign members,
+retained evidence from another Run, new unselected Host clearing, and two actual
+cross-Campaign transitions with return recovery. Detailed red/green, fixed-range
+reviews, offscreen frame/accessibility scope and report hashes are maintained in
+`frontend-v21-issue134-health-routing-progress.md`. Earlier scratch reports below
+remain historical evidence; they are not additional permanent-test counts.
+Final combined regression on 2d11870: **249 passed**, 442.44 s console, including
+all 10 exact-observation cases and the previous 239 related cases. This still
+does not certify automatic scheduling or all durable recovery/native gates.
+
 ## Latest remount and exact-selection checkpoint
 
 The earlier remount failure below is historical, not the current result for the
