@@ -4,7 +4,180 @@ Date: 2026-09-14. This is implementation progress, **not ticket acceptance**.
 The full #133–#171 goal remains active. No remote publication, main merge,
 release, production-default switch or system configuration change was performed.
 
-## Header-summary increment — 2026-09-14
+## Per-group observation increment — 2026-09-14
+
+Fixed predecessor `c7283f3f6ab3f93988ef1d7a0e3e8a0d871be58a`; candidate source
+`d10a3c846b74c79cda0e48a15f2c49046e4daf05`; corrected source
+`2ec99b140d9a4eab8e965222a2e03b5c6ce78b40`; performance correction
+`e1bc5dbc47a35426d2c9e028f76e8c72ee826d20`. This is another local #134 increment,
+not a complete D14 or ticket acceptance. The pure renderer uses delivered typed
+facts only; it introduces no reads, clock, commands, expiry policy or Feature API.
+
+- Runtime, data source, queue, cache, persistence and version each show their own
+  observation record, scope, current affected work and safe diagnostic. Data,
+  queue, cache and persistence show their own age/threshold. Runtime/version's
+  existing 1.0 contract lacks independent age/threshold, so these are explicitly
+  missing rather than borrowed from peers. Available successful/reliable
+  observation and durable read/write timestamps remain separate facts.
+- A failed queue read retaining STALE data cannot be labelled fresh in the top
+  summary merely because the aggregate observation is fresh. The priority
+  component's own freshness is used where that public field exists.
+- Cold persistence has no successful observation timestamp even though the old
+  projection emits FRESH/zero. Details explicitly state no reliable observation,
+  retain the old interface marker as such, and show unknown age, not reliable zero.
+  The legal Runtime RECOVERED value renders as recovered without losing all groups.
+- The read-only text continues updating while a user reads. A UI-only UTF-16
+  matching-span mapper keeps an unchanged middle position or forward/backward
+  selection attached to surviving content; an end position follows the end.
+  Removed content clamps to the replacement. There is no frozen snapshot,
+  refresh/pause command or domain recovery mechanism. The UI skills informed the
+  restrained factual hierarchy and keyboard continuity, not new scope.
+
+Eleven permanent actual-QML tests cover per-group facts, independent age, failed
+queue retention, unknown cold age, RECOVERED through the public live health
+application input and AppContext, read-only QAccessible values, normal/compact
+font scaling, reading position and both selection directions. Seven supplemental
+pure offset cases initially covered initial/empty text, deletion and UTF-16
+non-BMP content; two added cases cover an unchanged span within a changed line
+and repeated unchanged lines (nine supplemental cases on final source).
+The two existing real exact-Task cases additionally assert group facts and their
+affected-work association; their original identity checks are retained.
+
+Reports below are immutable files under the existing `issue134-20260914` root.
+
+| Behavior | Causal red | Green / scope |
+| --- | --- | --- |
+| Per-group observation record | `health-detail-observation-fields-red.xml`: 1F | `health-detail-observation-fields-green.xml`: 1P |
+| Retained stale queue cannot have a fresh header | `health-detail-queue-freshness-red.xml`: 1F/1P | `health-detail-queue-freshness-green.xml`: 10P |
+| Reading at the end survives update | `health-detail-reading-continuity-red.xml`: 1F/6P, caret reset to zero | `health-detail-reading-continuity-green.xml`: 9P including two real exact-Task cases |
+| RECOVERED, cold persistence age, middle caret and selection | `health-detail-review-findings-red.xml`: 4F | `health-detail-review-findings-green.xml`: 10P, before backward-selection and cold-label refinement |
+| Cold persistence label cannot imply reliable freshness | `health-detail-cold-reading-probe.xml`: 1F/10P | Included in corrected 28P run below |
+| Initial empty observation retains the beginning | `health-detail-offset-red.xml`: 1F/6P | Included in corrected 28P run below |
+
+`health-detail-age-and-unknown-probe.xml` (1F/3P) used an invalid wait for domain
+phase to leave LOADING. A valid delivered unknown snapshot can remain LOADING;
+the corrected test waits for the actual rendered observation. It is a test setup
+correction, not a causal product red.
+
+Corrected source targeted report `health-detail-corrections-targeted-green.xml`:
+**28 passed in 71.84 s** (11 details + 7 offset + 10 exact-observation), no failures
+or errors. SHA-256 `444AD7B9B7F3E7B2F524F9A799CE29B3CC709587E08F0946E20507306E2B9FF5`.
+The four-failure review red SHA-256 is
+`69DABF5931E6F7208DC36FFF0A0B2A3AE3C789CE24E97AD286612919E39D270E`.
+The cold-label red SHA-256 is
+`94BD723B9E08E73C689C38C526EB6B31EC535E6E4E589B788247A83B08A9AA05`.
+
+### Native crash investigation, not a repaired-crash claim
+
+The candidate full run on `d10a3c8` (terminal session 47909, exit 1) emitted
+`Windows fatal exception: access violation` in the retained Tasks test
+`test_real_diagnostic_tasks_route_renders_each_terminal_inventory_state`, line
+3470 (`app.processEvents()`). It terminated before a final JUnit report existed;
+`health-detail-candidate-full-regression.xml` is absent. The tool trace records
+the crash; it is not a passing 264-case report and no missing XML was fabricated.
+The diagnostic skill required a reproducing loop before causal speculation.
+
+On unchanged candidate production source, the exact parametrized test replay
+passed 5 cases in 2.68 s (`health-detail-crash-isolated-replay.xml`, SHA-256
+`855941AF65330CDF5044E0CF0EF567F949484977292BF256D2C27374B51A829D`).
+The original first-two-module order then passed 40 cases in 174.79 s
+(`health-detail-crash-prefix-replay.xml`, SHA-256
+`F718A9900FD0CA6F6B55BFCAB2D4222BBEB8221D44E4465B34DDD30139FFD3FB`).
+Neither reproduced the crash. Cause is still unknown; no native-crash fix,
+environmental explanation or flaky-test exemption is asserted. The independent
+health rendering defects were reproduced separately and do not explain this crash.
+
+### Corrected-source review and regression
+
+Fixed nonempty review range:
+`git diff c7283f3f6ab3f93988ef1d7a0e3e8a0d871be58a...2ec99b140d9a4eab8e965222a2e03b5c6ce78b40`.
+Spec independently confirms its original 2 P2 resolved, 0 new deviation. Standards
+confirms the original hard-standard P2 resolved, then identified a separate P2
+performance issue with whole-text character matching. Neither executed tests or
+certified the whole ticket. The performance recheck is recorded below separately.
+
+Source `2ec99b1` related regression `health-detail-reviewed-full-regression.xml`
+completed **275 passed in 450.63 s**, zero failures/errors/skips. The native crash
+did not recur in this run, but its cause remains unknown. This report predates
+the performance correction and must not be relabelled as final `e1bc5db` evidence.
+SHA-256 `55DDC9EAEA5D83C86025E05A6C55472AEC71B263E7F214EFA5913AF56AA6C5BE`.
+
+### Matching performance correction
+
+The bounded scratch probe `health_detail_selection_timing.py` used a public fake
+Feature snapshot and a second typed-valid snapshot with six 480-character safe
+explanations. These are synthetic inputs, not production workload measurements.
+Initial full-text UTF-16 matching took 143.599–151.391 ms for 3835 characters
+(five calls); a repeated isolation probe measured 153.164–163.977 ms. Encoding
+alone took 0.293–0.381 ms and line matching 0.070–0.119 ms. These observations
+support the fine-grained full-text matching cost, not a Qt-layout-only cause.
+
+`e1bc5db` first matches whole lines and refines only a changed line block that
+contains a selection endpoint. Both endpoints share that block's refinement.
+The same long legal descriptions with a middle Version-heading selection took
+0.101–0.160 ms (five calls); ordinary 1292-character observations took
+0.087–1.271 ms. Actual QML keyboard behavior plus nine supplemental offset cases
+passed: `health-detail-local-diff-targeted.xml`, **20 passed in 6.38 s**.
+SHA-256 `F8F59DF8531EF9969E1D862BAD75540A6CD681381382EA6C0FFEA85C9D0EA6DD`.
+No text, UI-state, execution or observation-timing contract was relaxed.
+
+This is a local isolated-function comparison, not a guarantee about every legal
+input, full UI frame latency, native renderer or machine. The scratch probe is
+retained as clearly labelled diagnostic evidence; no debug instrumentation was
+added to production.
+
+### Final independent review
+
+Both axes rechecked the fixed nonempty performance range
+`git diff 2ec99b140d9a4eab8e965222a2e03b5c6ce78b40...e1bc5dbc47a35426d2c9e028f76e8c72ee826d20`
+and retained their earlier review of the full increment.
+
+- Standards: original RECOVERED hard-standard P2 resolved. The separate concrete
+  performance P2 is also resolved on its reproduced path; it was not relabelled
+  as a Fowler smell or hard-standard violation. No new hard-standard violation
+  or actionable smell. The reviewer read the 20-pass report but did not run tests.
+- Spec: original two P2 (RECOVERED and unknown persistence age) remain resolved;
+  no new deviation in localized matching. It only adjusts the reader's position,
+  never the incoming facts or execution state. Static review only.
+
+Counts remain per axis: Standards 1 hard P2 + 1 performance P2 resolved,
+0 outstanding in this increment; Spec 2 P2 resolved, 0 outstanding. Shared
+RECOVERED findings are not counted as different defects. Neither axis certifies
+the full ticket, the native-crash cause/fix, native UIA or overall frame budget.
+
+### Final source-bound regression and visible frames
+
+Frozen source `e1bc5dbc47a35426d2c9e028f76e8c72ee826d20`:
+`health-detail-localized-full-regression.xml`, **277 passed in 459.11 s** console
+(459.039 s JUnit), zero failures, errors or skips. SHA-256
+`8E0061BFA0B32AF919ADD24B39723CA30ACFD586A1911C922596F11FD141EDB7`.
+The 16 modules comprise the prior 257-case related suite, 11 new detail cases and
+9 supplemental offset cases. Session 49560 terminated successfully; source/tests
+were unchanged during the run (only these evidence documents were edited).
+The native crash again did not recur; this is not evidence of its cause or repair.
+
+Four final-source images in `health-detail-frames-localized-final/` were inspected:
+
+| Frame | SHA-256 |
+| --- | --- |
+| `health-details-top-1426x786.png` | `DECEF2E2BAC983732A36082F5C9EE5184578CB2CF16A0426DE883141CD997CD8` |
+| `health-details-end-1426x786.png` | `2ACA7DAD60C6F7C361E53F6C006183484434CB450BA8F1553B97A6632B97BC8C` |
+| `health-details-top-960x480.png` | `0844E6646919C23C962A6D921F95E98BFEC47207F1B7F6DE9E69891C64F1B30E` |
+| `health-details-end-960x480.png` | `081609E46DCD22677236E320CAB4001D683D6A7EB29191F8D4DFFB4B5F6878AD` |
+
+Recorded actual logical clients are 1426×786/text100% and 960×480/text200%, DPR1.0.
+Text wraps, Close remains visible, and keyboard reading reaches the final line.
+The legacy aggregate/impact diagnostic copy is still technical and tall at text
+200%; these images certify bounded scroll/read-only reachability, not final
+language, information-density, appearance or full D14 acceptance. They are
+offscreen Software/QAccessible evidence, not native Windows UIA/Narrator,
+system text scale, physical DPI, Direct3D11 or formal packaged cold-start evidence.
+
+Checkpoint locally complete; #134 and the full implementation goal remain open.
+Generation-3 durable recovery, broader native focus/accessibility/DPI,
+normal/package entry, startup and other ticket-local obligations remain.
+
+## Header-summary increment — 2026-09-14 (previous)
 
 Fixed predecessor `ab30fc85ad8bf63b18e4dd36af5651955b190019`; candidate source
 `b3cb493d4ce5e762f3a1b7fd7b4b2c551ab50433`. This increment presents existing

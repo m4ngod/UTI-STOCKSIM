@@ -4,7 +4,33 @@ Date: 2026-09-14. Ticket: https://github.com/m4ngod/UTI-STOCKSIM/issues/134.
 Parent: published specification #132 v1.0. Audited predecessor:
 `f354f0328ba33e10f98b8018e886d170c8d72c0d` (#133).
 
-## Latest header-summary increment
+## Latest per-group health increment
+
+Source `d10a3c8`, corrections `2ec99b1` and `e1bc5db`: the read-only popup now explains each of
+the six existing observation groups with its own timestamps, available expiry
+basis, safe diagnostic and current affected-work scope. Unprovided Runtime/
+Version thresholds are labelled missing. Cold persistence cannot imply a reliable
+zero age; the existing legal RECOVERED state remains renderable. The header uses
+the priority component's own freshness when the old contract supplies it.
+
+Actual keyboard tests reproduce and correct lost middle/end reading positions
+and cleared selections during updates. Facts are not frozen; forward/backward
+selection follows unchanged content. Corrected targeted regression: 28 passed
+in 71.84 s. The corrected `2ec99b1` related regression passed 275 cases in 450.63 s.
+A subsequent independently flagged long-text matching cost was reproduced and
+reduced by localizing character matching; 20 targeted cases pass on `e1bc5db`.
+Its final related regression passed **277 cases in 459.11 s**, zero failures,
+errors or skips, on frozen source `e1bc5dbc47a35426d2c9e028f76e8c72ee826d20`.
+Both axes rechecked: Standards 1 hard P2 and 1 separate performance P2 resolved;
+Spec 2 P2 resolved; no new findings on either axis. Final ordinary/compact frames
+at text100/200%, DPR1, were inspected for read-only scroll/keyboard reachability.
+Dense legacy diagnostic wording is not certified as final visual/language polish.
+An initial candidate full run crashed natively in retained Tasks; isolated and
+original-prefix replays pass, but the crash cause remains unknown. Detailed
+reports, scope and limitations are in `frontend-v21-issue134-health-routing-progress.md`.
+No full #134/D14 acceptance, release or native DPI/UIA certification is implied.
+
+## Previous header-summary increment
 
 Local source `b3cb493`, review correction `55b4f80`: the top bar presents readable
 status, freshness and priority component impact, with full affected-work scope
@@ -266,14 +292,16 @@ hashes and scope are in
    exact context; independently usable task/run observation inside the Lab.
    Do not expose legacy AI authoring as V2.1 creation or invent Attempt/checkpoint
    semantics. Full creation and cross-experiment analysis remain successor slices.
-2. Finish context-aware read-only health summaries, each group's observation age
-   and impact, broader semantic focus recovery and modal containment. Basic legacy
-   health parent/overlay routing is implemented; generation-3 durable migration
-   and real execution continuity are not complete.
-3. Extend the now-tested real page switching and observer disposal to full Host
-   remount, active Lab task/run selection and late completion across context
-   generations. The confirmed eager-construction blocking read is still open;
-   view disposal passing is not remount acceptance.
+2. Finish broader semantic focus recovery, modal containment and generation-3
+   durable migration. Basic legacy health parent/overlay routing, readable header
+   and per-group observation facts are implemented in the newer checkpoints;
+   their bounded evidence is not full health or migration acceptance.
+3. Extend the now-tested real page switching, observer disposal and full Host
+   remount to broader active Lab task/run selection and late completion across
+   context generations. The historical eager-construction blocking repro above
+   was resolved for the tested Scenario/exact Run/Evidence paths by the later
+   `2d11870` checkpoint; it is not a currently reproduced defect for those paths.
+   That does not certify every remount/lifecycle combination.
 4. Finish compact/normal/wide layout and evidence-region behavior, resizes with open
    drawers, text 100/200%, UIA name/role/value/state and actual client/DPR records.
 5. Extend the recorded source probes to the finished shell and formal package's
