@@ -192,6 +192,15 @@ def test_legacy_run_route_observes_exact_run_instead_of_inactive_task_summary(re
     assert selection.run_id.value in interface.text(QAccessible.Text.Value)
     assert interface.state().readOnly
     summary.forceActiveFocus()
+    QTest.qWait(30)
+    focus_color = host.rootObject().findChild(QObject, "designTokens").property("focus")
+    focus_point = summary.mapToScene(QPointF(1, 1))
+    frame = host.grabFramebuffer()
+    assert not frame.isNull()
+    assert frame.pixelColor(
+        round(focus_point.x() * frame.devicePixelRatio()),
+        round(focus_point.y() * frame.devicePixelRatio()),
+    ) == focus_color, "The focused legacy Run summary must have a visible focus outline"
     original_text = summary.property("text")
     QTest.keyClick(host.quickWindow(), Qt.Key.Key_X)
     assert summary.property("text") == original_text

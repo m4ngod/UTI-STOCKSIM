@@ -153,6 +153,7 @@ Rectangle {
             visible: workspace.activeRoute === "run_monitoring"
             contentWidth: availableWidth
             TextArea {
+                id: existingResourceSummary
                 objectName: "researchExistingResourceSummary"
                 readOnly: true
                 Accessible.readOnly: true
@@ -177,7 +178,11 @@ Rectangle {
                         + "\n生命周期: " + runMonitoring.lifecycle
                         + "\n进度: " + runMonitoring.progressText)
                     : (diagnosticTasks === null ? "实验室资源不可用" : diagnosticTasks.statusText)
-                background: Rectangle { color: tokens.background }
+                background: Rectangle {
+                    color: tokens.background
+                    border.color: tokens.focus
+                    border.width: existingResourceSummary.activeFocus ? tokens.focusWidth : 0
+                }
             }
         }
         ResearchAssetPage {
