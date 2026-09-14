@@ -7637,7 +7637,50 @@ class JourneyWorkspaceHost(QQuickWidget):
             JourneyWorkspaceRoute.SYSTEM_HEALTH: system_health_feature is not None,
         }
         initial_route_identity = self._safe_route(requested_initial_route)
-        if (
+        legacy_health_entry = (
+            research_shell
+            and requested_initial_route is JourneyWorkspaceRoute.SYSTEM_HEALTH
+        )
+        self._initial_health_overlay_pending = (
+            legacy_health_entry
+            and self._route_availability[JourneyWorkspaceRoute.SYSTEM_HEALTH]
+        )
+        if legacy_health_entry:
+            saved_parent = (
+                journey_workspace_bookmark.last_route
+                if journey_workspace_bookmark is not None
+                else JourneyWorkspaceRoute.SYSTEM_HEALTH
+            )
+            safe_parent = (
+                saved_parent is not JourneyWorkspaceRoute.SYSTEM_HEALTH
+                and self._route_availability[saved_parent]
+                and (
+                    initial_recovery_state is None
+                    or initial_recovery_state.reason is JourneyRecoveryReason.EXACT
+                )
+            )
+            initial_route_identity = (
+                saved_parent if safe_parent
+                else self._safe_route(JourneyWorkspaceRoute.STRATEGY_LIBRARY)
+            )
+            self._recovery_state = JourneyRecoveryState(
+                JourneyRecoveryReason.EXACT if safe_parent
+                else JourneyRecoveryReason.UNAVAILABLE_ROUTE,
+                initial_route_identity,
+                "旧系统状态入口已映射为原页面上方的只读弹层。" if safe_parent
+                else (
+                    "旧系统状态入口没有可安全恢复的原页面；已回到组合库。"
+                    if initial_route_identity is JourneyWorkspaceRoute.STRATEGY_LIBRARY
+                    else "旧系统状态入口没有可安全恢复的原页面；组合库不可用，已打开可用兼容页。"
+                ),
+            )
+            if initial_recovery_state is not None and (
+                initial_recovery_state.reason is not JourneyRecoveryReason.EXACT
+            ):
+                self._recovery_state = replace(
+                    initial_recovery_state, safe_route=initial_route_identity,
+                )
+        elif (
             initial_route_identity is requested_initial_route
             and initial_recovery_state is not None
         ):
@@ -7667,7 +7710,10 @@ class JourneyWorkspaceHost(QQuickWidget):
             last_route=initial_route_identity,
         )
         self._journey_workspace_bookmark_sink = (
-            journey_workspace_bookmark_sink
+            # The opt-in composition imports legacy identities read-only. Its
+            # generation-3 persistence is a separate migration slice; never
+            # feed four-page navigation back into the Wave 3/4 bookmark sink.
+            None if research_shell else journey_workspace_bookmark_sink
         )
         initial_focus_token = (
             self._journey_workspace_bookmark.presentation.focus_return_token
@@ -8145,10 +8191,13 @@ class JourneyWorkspaceHost(QQuickWidget):
                 )
             )
             return False
-        self._preserve_explicit_recovery = False
         root = self.rootObject()
         if root is None:
             return False
+        if self._research_shell and route is JourneyWorkspaceRoute.SYSTEM_HEALTH:
+            root.healthOverlayRequested.emit()
+            return True
+        self._preserve_explicit_recovery = False
         if route is self._active_route:
             self._apply_route_activation(route)
             self._publish_focus_return_token(route)
@@ -9043,6 +9092,11 @@ class JourneyWorkspaceHost(QQuickWidget):
 
     def _restore_focus_after_show(self) -> None:
         if self._workspace_closed or not self.isVisible():
+            return
+        if self._initial_health_overlay_pending:
+            self._initial_health_overlay_pending = False
+            self._initial_show_focus_pending = False
+            self.activate_route(JourneyWorkspaceRoute.SYSTEM_HEALTH)
             return
         if self._initial_show_focus_pending:
             self._initial_show_focus_pending = False

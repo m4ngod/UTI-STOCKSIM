@@ -10,7 +10,8 @@ import os
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPointF, Qt
+from PySide6.QtGui import QAccessible
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -20,7 +21,7 @@ from app.features import (
     FormalDiagnosticCampaignId, RunMonitoringContext, RunMonitoringSelection,
     StrategyRunId,
 )
-from app.journey_recovery import JourneyWorkspaceRoute
+from app.journey_recovery import JourneyWorkspaceBookmark, JourneyWorkspaceRoute
 from app.ui.journey_workspace import JourneyWorkspaceHost
 from app.ui.main_window import MainWindow
 from app.ui.accessibility import AccessibilityPreferences
@@ -42,9 +43,12 @@ def research_host(tmp_path, monkeypatch, request):
     )
     host = None
     try:
+        requested = getattr(request, "param", {})
+        options = requested if isinstance(requested, dict) else {"context": requested}
         host = JourneyWorkspaceHost(
             context.run_monitoring_feature,
-            context=getattr(request, "param", context.run_monitoring_context),
+            context=options.get("context", context.run_monitoring_context),
+            journey_workspace_bookmark=options.get("bookmark"),
             strategy_library_feature=context.strategy_library_feature,
             strategy_library_context=context.strategy_library_context,
             strategy_library_queries=context.strategy_library_queries,
@@ -58,9 +62,13 @@ def research_host(tmp_path, monkeypatch, request):
             evidence_context=context.evidence_and_findings_context,
             system_health_feature=context.system_health_feature,
             system_health_context=context.system_health_context,
-            initial_route="strategy_library", research_shell=True,
+            initial_route=options.get("initial_route", "strategy_library"),
+            accessibility_preferences=AccessibilityPreferences(
+                text_scale=options.get("text_scale", 1.0), reduced_motion=True,
+            ),
+            research_shell=True,
         )
-        host.resize(1426, 786)
+        host.resize(*options.get("size", (1426, 786)))
         host.show()
         QTest.qWait(60)
         yield app, context, host
@@ -120,6 +128,95 @@ def test_legacy_run_route_observes_exact_run_instead_of_inactive_task_summary(re
     QTest.qWait(50)
     assert selection.run_id.value in summary.property("text")
     assert "completed" in summary.property("text")
+
+
+@pytest.mark.parametrize("research_host", [EXACT_RUN_CONTEXT], indirect=True)
+def test_legacy_health_entry_overlays_the_observed_run_without_replacing_it(research_host):
+    _, context, host = research_host
+    context.run_monitoring_feature.advance_to_running(EXACT_RUN_CONTEXT)
+    assert host.activate_route(JourneyWorkspaceRoute.RUN_MONITORING)
+    QTest.qWait(30)
+    root = host.rootObject()
+    assert host.activate_route(JourneyWorkspaceRoute.SYSTEM_HEALTH)
+    QTest.qWait(30)
+    popup = root.findChild(QObject, "researchHealthPopup")
+    assert host.active_route is JourneyWorkspaceRoute.RUN_MONITORING
+    assert popup.property("opened") is True
+    # Completion arrives while the legacy health entry is open. Observation of
+    # this exact run must continue; opening health is not a page replacement.
+    context.run_monitoring_feature.advance_to_completed(EXACT_RUN_CONTEXT)
+    QTest.qWait(30)
+    summary = root.findChild(QQuickItem, "researchExistingResourceSummary")
+    assert summary.isVisible()
+    assert "RESEARCH-RUN-EXACT" in summary.property("text")
+    assert "completed" in summary.property("text")
+    assert host.journey_context.route is JourneyWorkspaceRoute.RUN_MONITORING
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_Escape)
+    QTest.qWait(30)
+    assert popup.property("opened") is False
+    assert root.findChild(QQuickItem, "researchHealthButton").hasActiveFocus()
+    assert host.active_route is JourneyWorkspaceRoute.RUN_MONITORING
+
+
+@pytest.mark.parametrize("research_host,expected", [
+    ({"initial_route": "system_health", "bookmark": JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH)}, JourneyWorkspaceRoute.STRATEGY_LIBRARY),
+    ({"initial_route": "system_health", "bookmark": JourneyWorkspaceBookmark(
+        last_route=JourneyWorkspaceRoute.SCENARIO_LAB)}, JourneyWorkspaceRoute.SCENARIO_LAB),
+], indirect=["research_host"])
+def test_initial_health_entry_uses_saved_parent_or_explained_combination_fallback(
+    research_host, expected,
+):
+    _, _, host = research_host
+    root = host.rootObject()
+    popup = root.findChild(QObject, "researchHealthPopup")
+    assert host.active_route is expected
+    assert host.journey_context.route is expected
+    assert popup.property("opened") is True
+    assert root.findChild(QQuickItem, "researchHealthCloseButton").hasActiveFocus()
+    if expected is JourneyWorkspaceRoute.STRATEGY_LIBRARY:
+        assert "原页面" in host.recovery_state.explanation
+        assert "组合库" in host.recovery_state.explanation
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_Escape)
+    QTest.qWait(30)
+    assert popup.property("opened") is False
+    assert root.findChild(QQuickItem, "researchHealthButton").hasActiveFocus()
+    # A later hide/show does not replay the migrated startup action.
+    host.hide()
+    host.show()
+    QTest.qWait(40)
+    assert popup.property("opened") is False
+    assert host.active_route is expected
+
+
+@pytest.mark.parametrize("research_host", [
+    {"size": (960, 480), "text_scale": 2.0},
+    {"size": (1426, 786), "text_scale": 1.0},
+], indirect=True)
+def test_health_overlay_supports_readonly_keyboard_reading_and_modal_focus(research_host):
+    _, _, host = research_host
+    assert host.activate_route(JourneyWorkspaceRoute.SYSTEM_HEALTH)
+    QTest.qWait(30)
+    root = host.rootObject()
+    facts = root.findChild(QQuickItem, "researchHealthFacts")
+    close = root.findChild(QQuickItem, "researchHealthCloseButton")
+    assert close.hasActiveFocus()
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_Tab)
+    assert facts.hasActiveFocus()
+    assert QAccessible.queryAccessibleInterface(facts).state().readOnly
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_End, Qt.KeyboardModifier.ControlModifier)
+    QTest.qWait(30)
+    assert facts.property("cursorPosition") == len(facts.property("text"))
+    cursor = facts.property("cursorRectangle")
+    bottom = facts.mapToScene(QPointF(cursor.x(), cursor.bottom())).y()
+    assert 0 < bottom <= host.height()
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_Tab)
+    assert close.hasActiveFocus()
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_Backtab)
+    assert facts.hasActiveFocus()
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_Escape)
+    QTest.qWait(30)
+    assert root.findChild(QQuickItem, "researchHealthButton").hasActiveFocus()
 
 
 def test_health_overlay_keeps_page_observation_and_returns_keyboard_focus(research_host):
@@ -331,6 +428,47 @@ def test_same_window_reflow_keeps_list_focus_visible_and_preserves_exact_selecti
         host.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         app.processEvents()
+
+
+@pytest.mark.parametrize("research_shell", [True, False])
+def test_opt_in_health_restore_does_not_overwrite_legacy_bookmark_sink(
+    composed, tmp_path, research_shell,
+):
+    app = QApplication.instance()
+    context, _, _, _ = composed
+    original = JourneyWorkspaceBookmark(last_route=JourneyWorkspaceRoute.SYSTEM_HEALTH)
+    saved = []
+    window = MainWindow(
+        run_monitoring_feature=context.run_monitoring_feature,
+        strategy_library_feature=context.strategy_library_feature,
+        strategy_library_queries=context.strategy_library_queries,
+        feature_capabilities=context.feature_capabilities(),
+        system_health_feature=context.system_health_feature,
+        journey_workspace_bookmark=original,
+        journey_workspace_bookmark_sink=saved.append,
+        frontend_v2_enabled=True, research_shell=research_shell,
+        layout_path=str(tmp_path / "layout.json"),
+    )
+    try:
+        window.resize(960, 480)
+        window.show()
+        QTest.qWait(50)
+        host = window.centralWidget()
+        if research_shell:
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Escape)
+        assert host.activate_route(JourneyWorkspaceRoute.RUN_MONITORING)
+        assert host.activate_route(JourneyWorkspaceRoute.STRATEGY_LIBRARY)
+        QTest.qWait(30)
+    finally:
+        window.close()
+        window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+    assert original.last_route is JourneyWorkspaceRoute.SYSTEM_HEALTH
+    if research_shell:
+        assert saved == []
+    else:
+        assert saved and saved[-1].last_route is JourneyWorkspaceRoute.STRATEGY_LIBRARY
 
 
 def test_main_window_can_compose_research_shell_without_legacy_minimum_height(composed, tmp_path):

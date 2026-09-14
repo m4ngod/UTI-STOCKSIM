@@ -60,7 +60,9 @@ Popup {
                 id: facts
                 objectName: "researchHealthFacts"
                 readOnly: true
+                Accessible.readOnly: true
                 selectByMouse: true
+                selectByKeyboard: true
                 wrapMode: TextEdit.WrapAnywhere
                 font.pixelSize: tokens.bodySize
                 color: tokens.textPrimary

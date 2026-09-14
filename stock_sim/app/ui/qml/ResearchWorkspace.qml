@@ -22,6 +22,8 @@ Rectangle {
     readonly property var evidenceInitialFocusItem: archiveNavigation
     readonly property var systemHealthInitialFocusItem: healthButton
     signal routeActivationRequested(string route)
+    signal healthOverlayRequested()
+    onHealthOverlayRequested: healthPopup.open()
 
     DesignTokens { id: tokens; objectName: "designTokens" }
 
@@ -133,7 +135,6 @@ Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
             visible: workspace.activeRoute === "run_monitoring"
-                || workspace.activeRoute === "system_health"
             contentWidth: availableWidth
             TextArea {
                 objectName: "researchExistingResourceSummary"
