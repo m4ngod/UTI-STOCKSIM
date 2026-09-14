@@ -4,7 +4,66 @@ Date: 2026-09-14. Ticket: https://github.com/m4ngod/UTI-STOCKSIM/issues/134.
 Parent: published specification #132 v1.0. Audited predecessor:
 `f354f0328ba33e10f98b8018e886d170c8d72c0d` (#133).
 
-## Latest truthful resource-state increment
+## Latest drawer reflow and readonly Run accessibility increment
+
+Fixed predecessor `e177bcebc52f59b456d9aff455ffdc1a98c17604`; test checkpoint
+`4ceacd32c6b3184ffa49260f442940030c87ba20`; final production/tests
+`16bdba96fbcf523d2cf56df43d48272146f08a9b`.
+
+- A real persisted non-default Scenario now exercises the open resource drawer
+  across 2600x1400, 960x480, 960x540, wide again and compact again, at text100/200%.
+  The same index and identity, visible list bounds, keyboard focus, Escape return
+  and reopening are verified. The product reflow implementation needed no change.
+- The old Run compatibility summary had two reproduced accessibility omissions:
+  its QAccessible state did not declare readonly, and Ctrl+End left the cursor at
+  zero. Explicit `Accessible.readOnly` and `selectByKeyboard` correct these. Actual
+  editing remains prohibited; exact Run identity and status updates are retained.
+- Final four-module regression: **104 passed**, 57.25 s console (57.222 s JUnit),
+  no failures/errors/skips. Includes resource pages/states, the shell and both
+  public product-entry paths. Report `local-accessibility-reviewed-regression.xml`,
+  SHA-256 `1D695BA77459C8A2116554C8D6BD069A1A6B6A2A9C02079417DF05AA6E708CA3`.
+- Native Windows Run-summary matrix: **8 passed Software / 8 passed Direct3D11**,
+  every actual renderer checked, logical960x480/540,1426x786,2600x1400 at both
+  text scales; actual DPR1. These use the public fake AppContext's exact running/
+  completed observation, not real execution or native UIA proof. The real-input
+  drawer case and renderer matrix have distinct input provenance.
+- Final independent Standards review: 0 hard violations or actionable smells;
+  the original first-row-only test weakness is resolved by selecting index1.
+  Final Spec review: 0 actionable deviations. Both reviewed the fixed nonempty
+  `e177bce...16bdba9` range read-only, without reviewer test execution.
+
+Detailed reports and limitations are in the
+[resource progress record](frontend-v21-issue134-resource-pages-progress.md).
+This is not a new complete repository regression or installed-candidate test.
+
+### Fresh dependency and remaining acceptance audit
+
+The formal bodies/states of #133–#171 were reread, without comments. #133 is
+CLOSED; #134 is OPEN/assigned m4ngod. The remaining tickets all depend directly
+or transitively on #134. In particular the next roots #135, #143 and #165 explicitly
+depend on it; none can be claimed just because native verification is unavailable.
+
+| #134 requirement | Current evidence and limitation |
+| --- | --- |
+| Four destinations, independent six Features, top readonly health | ResearchWorkspace and existing shell/entry/capability tests; no new Feature version in this increment. |
+| Logical-space layout and reachable identity/status/reason | Existing exact-resource and wide evidence tests plus new non-default live drawer reflow; not complete physical-DPI certification. |
+| Subscription/execution separation, exact context, keyboard/focus | Existing real computation/disposal/remount and same/different Campaign tests; local popup and invalid-reference focus tests. Windows interactive/UIA walkthrough remains incomplete. |
+| First actual projection, empty/existing states, dual renderer record | Earlier public source-entry reports retained above 750ms; real empty source and native renderer facts in previous increment. No installed 750ms PASS. |
+| Public AppContext/Feature seams and real application | Existing actual persistence/execution paths and current public Feature/QML tests. No new interface contract to advertise. |
+| Product normal/empty/error/wait and native accessibility | Current local QML coverage is not a substitute for Windows UIA name/role/value/state and focus-return evidence. That gate is still open. |
+
+Computer Use initialization again failed before executing JavaScript with
+`failed to write kernel assets: 系统找不到指定的路径。 (os error 3)`.
+This is the second consecutive goal turn observing that condition, but this turn
+still completed an actual product correction and new acceptance evidence. No
+blocked/complete goal status is asserted. No app input or system/plugin setting
+change was performed to work around the tool. The user was asked asynchronously
+to try its official plugin entry and report whether it starts.
+[Official Computer Use guidance](https://learn.chatgpt.com/zh-Hans/docs/computer-use)
+describes the plugin's Try now entry and Windows active-desktop requirement; it
+does **not** establish a cause or repair for this exact kernel-assets error.
+
+## Previous truthful resource-state increment
 
 Production source `efddd31e53f411b1aea0a16b5af1a76acf38abb5`, final test-only
 correction `2d70427dad8b6598ada0e2d6bfb044d2fed23082`, fixed predecessor

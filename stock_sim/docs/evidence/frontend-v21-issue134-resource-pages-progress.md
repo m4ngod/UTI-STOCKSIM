@@ -7,6 +7,86 @@ ready-for-agent. The sandbox credential lookup returned 401; host read succeeded
 No comments or remote state were changed. The published #132 v1.0 SHA-256 remains
 `A4D64B033E55DCD5203B6204AA01932501EEBD06AE55BAB45EDF2FCDF48C839E`.
 
+## Open-drawer identity/focus and readonly Run follow-up — 2026-09-14
+
+Fixed predecessor `e177bcebc52f59b456d9aff455ffdc1a98c17604`; first test-only
+checkpoint `4ceacd32c6b3184ffa49260f442940030c87ba20`; final source/tests
+`16bdba96fbcf523d2cf56df43d48272146f08a9b`. No Feature Interface, persistent
+identity, observation owner or execution behavior changed.
+
+The new live Scenario test uses the existing public application's persisted
+inventory and the real QML browser. It requires at least two scenarios, explicitly
+selects index1 by keyboard, then checks that same identity/index through
+wide→960x480→960x540→wide→960x480. The open drawer becomes the inline list on
+widening and remains focused and within the actual client; Escape returns to its
+visible trigger, and reopening/Enter returns to the same exact details. Both
+100% and 200% fonts are covered. This is a new check of existing correct behavior,
+not a product fix. The first test draft used a nonexistent `identity` field;
+`resource-open-drawer-first.xml` has two setup failures, not behavioral reds.
+Using the actual `scenario_id` fixed the test. Independent review then identified
+that selecting index0 could miss a reset-to-first regression; the final test uses
+the non-default Scenario and asserts index1 before and throughout reflow.
+
+The old Run compatibility summary, however, had two genuine failures:
+
+- `run-summary-readonly-red.xml`: QAccessible readOnly=0 despite actual readonly
+  text. One failure, 1.751 s. Explicit `Accessible.readOnly: true` corrects it.
+- `run-summary-readonly-matrix.xml`: all8 Ctrl+End checks still failed, cursor0
+  instead of the122-character end. Explicit `selectByKeyboard: true` enables
+  readonly keyboard reading. `run-summary-keyboard-matrix-green.xml`:8 passed,
+  4.564 s, zero failures/errors/skips.
+
+The final Run test checks QAccessible name/role/value/readonly, rejects attempted
+typing, verifies the focused end cursor is within the client and retains the exact
+Run's running→completed identity/status transition. Four logical sizes at two font
+scales are recorded. The fixture is the supported fake AppContext, not a real Run
+or a UIA replacement. Production correction is exactly two QML properties.
+
+### Final verification and review
+
+All reports are under the established issue134 scratch directory:
+
+- `local-accessibility-reviewed-regression.xml`:104 passed,57.25s console /
+  57.222s JUnit,0failures/errors/skips; source frozen16bdba9. Four complete resource,
+  shell and public-entry modules. SHA-256
+  `1D695BA77459C8A2116554C8D6BD069A1A6B6A2A9C02079417DF05AA6E708CA3`.
+- `run-summary-native-software-16bdba9/results.xml`:8 passed,4.245s JUnit;
+  SHA-256 `33B75F346699A25B03BDC7DED622942755DE465610AF68E1FFE09BFF78454578`.
+- `run-summary-native-d3d11-16bdba9/results.xml`:8 passed,5.963s JUnit;
+  SHA-256 `CB06E81530699FB8BBC22D55AC590B024C051591239E735B8DBB1F51708445F2`.
+- Scratch native runner `run-summary-native.ps1`, SHA-256
+  `0B8FC65C9D573854F3E3AC26FCB557E3FF27186562B6919E01A9F25879A5BB32`, rejects
+  existing output directories and mismatched/missing actual renderer records.
+  All database/artifact paths are isolated before Python starts. Both Windows
+  processes exited0; every case records actual client, DPR1, font and matching API.
+  These durations are not rendering latency or startup measurements; the native
+  runs overlapped the separate regression. No new framebuffer inspection claimed.
+
+Earlier `resource-open-drawer-valid.xml` (2 passed,6.149s) and
+`resource-open-drawer-regression.xml` (47 passed,58.186s) tested index0 before the
+review correction. Their results are retained but do not prove non-default
+selection continuity. Final104 includes the strengthened two cases. Do not sum
+overlapping runs as unique cases or call this a new complete332+ suite.
+
+### Standards
+
+Final independent range `e177bce...16bdba9`:0 hard-standard violations,
+0 actionable Fowler smells. The first-row-only coverage concern was addressed;
+the product still exposes a readonly projection, not another execution path.
+
+### Spec
+
+Same final range:0 actionable deviations. D14's identity retention, reversible
+drawer, keyboard and accessible readonly expectations are more directly tested.
+Both reviewers were read-only and did not run tests. Neither certifies whole#134,
+native UIA, actual focus painting or full physical DPI.
+
+Supported Computer Use still cannot initialize its kernel assets. Windows UIA
+and its interactive focus-return walkthrough remain unverified; no fallback
+PowerShell UIA, plugin repair or system permission changes were attempted. The
+consolidated progress record contains the fresh dependency audit and user request
+to report whether the official Computer Use Try now entry works.
+
 ## Truthful resource-state increment — 2026-09-14
 
 Fixed predecessor `2822d90e7f32abb48c01f5a6cde14f5f1c9a4450`; frozen production
