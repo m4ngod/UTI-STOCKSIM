@@ -52,6 +52,18 @@ their identified issues resolved. Details are tracked in
 `frontend-v21-issue134-archive-drilldown-progress.md`;
 native/startup and remaining shell gates below are not waived.
 
+Latest health-routing checkpoint: `4c96d10`, review fix `e75ce98`, and isolated
+CJK evidence fixture `5dd9bd9`. Legacy health activation now opens an overlay over
+the observed page, startup retains a safe explicit parent or explains a fallback,
+missing health is explained, and the opt-in host does not write the old Journey
+bookmark sink. Its navigation remains session-only until generation-3 persistence.
+Read-only keyboard navigation and modal return are verified at normal/compact
+sizes. Final combined regression: **171 passed in 104.19 s**. Standards and Spec
+each identified the same P2 missing-capability explanation and independently
+confirmed it resolved; no outstanding new findings. Scope limits and source-bound
+reports are in `frontend-v21-issue134-health-routing-progress.md`. This does not
+prove real background execution continuity or complete #134.
+
 ## Evidence recorded so far
 
 Evidence folder: `F:/PythonProjects/.scratch/frontend-v21-goal/issue134-20260914/`.
@@ -178,7 +190,9 @@ SHA-256 binding for the final review-fix run (local file bytes before commit):
    Do not expose legacy AI authoring as V2.1 creation or invent Attempt/checkpoint
    semantics. Full creation and cross-experiment analysis remain successor slices.
 2. Finish context-aware read-only health summaries, each group's observation age
-   and impact, legacy-health routing, semantic focus fallback and modal containment.
+   and impact, broader semantic focus recovery and modal containment. Basic legacy
+   health parent/overlay routing is implemented; generation-3 durable migration
+   and real execution continuity are not complete.
 3. Test switching pages during real execution and late read completion; demonstrate
    disposal of page observations without cancellation of application work.
 4. Finish compact/normal/wide layout and evidence-region behavior, resizes with open
