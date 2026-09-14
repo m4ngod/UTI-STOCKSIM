@@ -20,9 +20,10 @@ from sqlalchemy.exc import OperationalError
 from app.app_context import build_app_context
 from app.event_bridge import EventBridge
 from app.features import (
+    ApprovedScenarioRecipeId, EvidenceAndFindingsContext, EvidenceAndFindingsSelection,
     DiagnosticCommandId, DiagnosticCommandIdempotencyKey, DiagnosticTaskLifecycle,
     DiagnosticTasksContext, LiveStrategyDiagnosticsV1ApplicationAdapter,
-    StartFormalDiagnosticCampaign,
+    MarketScenarioId, RunMonitoringContext, RunMonitoringSelection, StartFormalDiagnosticCampaign,
 )
 from app.journey_recovery import JourneyWorkspaceRoute
 from app.ui.journey_workspace import JourneyWorkspaceHost
@@ -79,6 +80,89 @@ def live_execution(tmp_path, monkeypatch):
         auxiliary.close()
         bridge.stop()
         engine.dispose()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+@pytest.mark.parametrize("destination", ["run_monitoring", "evidence_and_findings"])
+@pytest.mark.parametrize("explicit_member", [True, False])
+def test_hidden_task_initial_read_preserves_explicit_or_recovers_missing_observation(
+    live_execution, destination, explicit_member,
+):
+    app, context, application, _, gate = live_execution
+    gate.release.set()
+    feature = context.diagnostic_tasks_feature
+    approved = _approved_formal_task(feature)
+    receipt = feature.start_formal_diagnostic_campaign(StartFormalDiagnosticCampaign(
+        command_id=DiagnosticCommandId("exact-member-start"),
+        idempotency_key=DiagnosticCommandIdempotencyKey("exact-member-start"),
+        task_id=approved.task_id, expected_revision=approved.revision,
+        approved_revision=approved.revision,
+    ))
+    assert receipt.accepted and receipt.affected_campaign_id is not None
+    # Prepare persisted records through the application API. This explicit test
+    # setup is not evidence of an automatic campaign scheduler.
+    application.advance_diagnostic_campaign(
+        receipt.affected_campaign_id.value, max_cases=64, nodes_per_batch=10_000,
+    )
+    selected_task = DiagnosticTasksContext(task_id=approved.task_id)
+    task = feature.snapshot(selected_task).task
+    assert task is not None and task.handoff.ready_for_evidence_and_findings
+    # A different completed member of the SAME campaign is a legal exact
+    # observation, even when the task's default handoff points elsewhere.
+    node, run = next(
+        (node, run)
+        for node in task.handoff.campaign_nodes
+        for attempt in node.attempts if attempt.attempt_id == node.active_attempt_id
+        for run in attempt.runs
+        if run.reproduction_manifest_id is not None
+        and (run.reproduction_manifest_id != task.handoff.reproduction_manifest_id) is explicit_member
+    )
+    selected_case = next(case for case in task.handoff.selected_cases
+                         if case.campaign_case_id == node.selected_campaign_case_id)
+    run_context = RunMonitoringContext.for_run(RunMonitoringSelection(
+        campaign_id=receipt.affected_campaign_id, run_id=run.run_id,
+    ))
+    evidence_context = EvidenceAndFindingsContext.for_selection(EvidenceAndFindingsSelection(
+        campaign_id=receipt.affected_campaign_id, run_id=run.run_id,
+        strategy_id=run.strategy_id, market_scenario_id=MarketScenarioId(node.campaign_case_id.value),
+        approved_recipe_id=ApprovedScenarioRecipeId(selected_case.recipe_version_id.value),
+        reproduction_manifest_id=run.reproduction_manifest_id,
+    ))
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        context=run_context if explicit_member else RunMonitoringContext.no_selection(),
+        diagnostic_tasks_feature=feature, diagnostic_tasks_context=selected_task,
+        evidence_feature=context.evidence_and_findings_feature,
+        evidence_context=evidence_context if explicit_member else EvidenceAndFindingsContext.no_selection(),
+        initial_route=destination, research_shell=True,
+    )
+    host.resize(1426, 786)
+    host.show()
+    try:
+        root = host.rootObject()
+        lab = root.findChild(QQuickItem, "researchLabPage")
+        lab_list = root.findChild(QQuickItem, "researchLabPageList")
+        until(app, lambda: lab_list.property("count") > 0
+              and "正在读取" not in lab.property("statusText"))
+        assert host.active_route.value == destination
+        if destination == "run_monitoring":
+            summary = root.findChild(QQuickItem, "researchExistingResourceSummary")
+            assert run.run_id.value in summary.property("text")
+        else:
+            catalog = root.findChild(QQuickItem, "researchArchivePageList")
+            until(app, lambda: catalog.property("count") > 0)
+            catalog.forceActiveFocus()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+            details = root.findChild(QQuickItem, "researchArchivePageDetails").property("text")
+            assert run.run_id.value in details
+            until(app, lambda: host.journey_context.evidence_selection is not None)
+            assert host.journey_context.evidence_selection.reproduction_manifest_id == run.reproduction_manifest_id
+    finally:
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         app.processEvents()
 
@@ -195,6 +279,51 @@ def test_real_start_completes_after_page_switch_health_overlay_and_view_disposal
         worker.shutdown(wait=True)
         if probe is not None:
             probe.dispose()
+        if host is not None:
+            host.close_adapter()
+            host.close()
+            host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+def test_cold_scenario_wait_does_not_claim_a_reliable_previous_observation(live_execution):
+    app, context, _, engine, _ = live_execution
+    entered, release, expired = Event(), Event(), Event()
+    host = None
+
+    def hold_database_read(connection, cursor, statement, parameters, execution_context, many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            entered.set()
+            if not release.wait(10):
+                expired.set()
+                raise RuntimeError("The test failed to release the held initial inventory read")
+
+    event.listen(engine, "before_cursor_execute", hold_database_read)
+    try:
+        host = JourneyWorkspaceHost(
+            context.run_monitoring_feature,
+            scenario_lab_feature=context.scenario_lab_feature,
+            initial_route="scenario_lab", research_shell=True,
+        )
+        host.resize(1426, 786)
+        host.show()
+        page = host.rootObject().findChild(QQuickItem, "researchScenarioPage")
+        catalog = host.rootObject().findChild(QQuickItem, "researchScenarioPageList")
+        # The exposed source generation becomes available only after the typed
+        # first (loading) observation has reached the QML page.
+        until(app, lambda: entered.is_set()
+              and page.property("adapter").property("sourceGeneration") is not None)
+        assert not expired.is_set()
+        assert catalog.property("count") == 0
+        assert "正在读取场景资源" in page.property("statusText")
+        assert "保留上次有效观察" not in page.property("statusText")
+        release.set()
+        until(app, lambda: catalog.property("count") > 0
+              and "正在读取" not in page.property("statusText"))
+    finally:
+        release.set()
+        event.remove(engine, "before_cursor_execute", hold_database_read)
         if host is not None:
             host.close_adapter()
             host.close()

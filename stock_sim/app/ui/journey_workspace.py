@@ -947,7 +947,7 @@ class ScenarioLabQtAdapter(QObject):
         if observation.pending:
             return (
                 "正在读取场景资源；后台计算继续。"
-                if self._state is None else
+                if self._state is None or self._state.last_reliable_inventory is None else
                 "正在读取场景资源；后台计算继续，保留上次有效观察。"
             )
         return ""
@@ -5358,8 +5358,14 @@ class RunMonitoringQtAdapter(QObject):
         self._state = state
         self.stateChanged.emit()
 
-    def select_context(self, context: RunMonitoringContext) -> None:
+    def select_context(
+        self, context: RunMonitoringContext, *, replace_selection: bool = True,
+    ) -> None:
         if self._closed:
+            return
+        # Passive task recovery may fill an empty observation, but must not
+        # replace an exact selection even while its data is still loading.
+        if not replace_selection and self._context.selection is not None:
             return
         if context == self._context:
             return
@@ -5808,8 +5814,12 @@ class EvidenceAndFindingsQtAdapter(QObject):
         self.stateChanged.emit()
         self.localStateChanged.emit()
 
-    def select_context(self, context: EvidenceAndFindingsContext) -> None:
+    def select_context(
+        self, context: EvidenceAndFindingsContext, *, replace_selection: bool = True,
+    ) -> None:
         if self._closed or context == self._context:
+            return
+        if not replace_selection and self._context.selection is not None:
             return
         subscription = self._subscription
         self._subscription = None
@@ -8588,11 +8598,10 @@ class JourneyWorkspaceHost(QQuickWidget):
                 self._diagnostic_tasks.refresh()
             monitoring_context = self._diagnostic_tasks.monitoring_context()
             if monitoring_context is not None:
-                self._run_monitoring.select_context(monitoring_context)
+                self._select_run_monitoring_handoff(monitoring_context)
             evidence_context = self._diagnostic_tasks.evidence_context()
             if evidence_context is not None:
-                if self._evidence_and_findings is not None:
-                    self._evidence_and_findings.select_context(evidence_context)
+                self._open_evidence_and_findings_handoff(evidence_context)
         self._refresh_journey_context()
 
     @property
@@ -9748,7 +9757,9 @@ class JourneyWorkspaceHost(QQuickWidget):
     ) -> None:
         if self._workspace_closed or not isinstance(context, RunMonitoringContext):
             return
-        self._run_monitoring.select_context(context)
+        self._run_monitoring.select_context(
+            context, replace_selection=not self._research_shell,
+        )
 
     @Slot(object)
     def _open_run_monitoring_handoff(
@@ -9757,7 +9768,9 @@ class JourneyWorkspaceHost(QQuickWidget):
     ) -> None:
         if self._workspace_closed or not isinstance(context, RunMonitoringContext):
             return
-        self._select_run_monitoring_handoff(context)
+        # A successful explicit Start/Retry carries navigation intent; unlike
+        # passive state delivery it may deliberately replace the observation.
+        self._run_monitoring.select_context(context)
         root = self.rootObject()
         if root is not None:
             root.setProperty("activeRoute", "run_monitoring")
@@ -9773,7 +9786,9 @@ class JourneyWorkspaceHost(QQuickWidget):
             or not isinstance(context, EvidenceAndFindingsContext)
         ):
             return
-        self._evidence_and_findings.select_context(context)
+        self._evidence_and_findings.select_context(
+            context, replace_selection=not self._research_shell,
+        )
 
     def close_adapter(self, *, unload_qml: bool = True) -> None:
         if self._workspace_closed:
