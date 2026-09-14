@@ -4,7 +4,34 @@ Date: 2026-09-14. Ticket: https://github.com/m4ngod/UTI-STOCKSIM/issues/134.
 Parent: published specification #132 v1.0. Audited predecessor:
 `f354f0328ba33e10f98b8018e886d170c8d72c0d` (#133).
 
-## Latest native exact-context coverage and catalog focus repair
+## Latest native retained recovery and real execution continuity
+
+Two real-persistence sessions at `8507b6d` now confirm the complete Scenario
+wait/failure/retry sequence: actual 1426x786/text100/Software and
+960x480/text200/Direct3D11, both DPR 1. In each, the non-default selected identity,
+28 catalog entries and full source/limitation text remain unchanged. The compact
+failure explanation and source ending are keyboard-readable, and recovery returns
+the same object to fresh status. A third session that missed its fault interval is
+explicitly excluded from recovery coverage. All three sessions closed cleanly.
+
+See [native live recovery evidence](frontend-v21-issue134-native-live-recovery.md)
+for input provenance, exact source identities, screenshot/log hashes and a
+post-close persistence audit. There is no production change or new test result;
+the preceding 112-case regression remains the latest affected suite.
+
+A separate real-computation session at 1426x786/text100/Direct3D11 now confirms
+navigation through Lab, Archive and retained Scenario while a public start command
+is pending. The exact-task health overlay opens and closes. Native view closure
+occurs before command completion; the retained application context then records
+one completed case and two real strategy Runs with production-host audit.
+See [native execution continuity](frontend-v21-issue134-native-live-execution.md)
+for that explicit fixture lifetime boundary and exact task/Campaign identities.
+This is not complete Campaign execution or installed-process shutdown evidence.
+
+Native readonly/focus observer limitations and remaining local state/layout
+coverage are unfinished. #134 stays OPEN; the full goal stays ACTIVE.
+
+## Previous native exact-context coverage and catalog focus repair
 
 Four observed native sessions add persisted Lab task reading, compact and wide
 Archive reference drill-down, disconnected exact-parent return and invalid-source
