@@ -4,7 +4,32 @@ Date: 2026-09-14. Ticket: https://github.com/m4ngod/UTI-STOCKSIM/issues/134.
 Parent: published specification #132 v1.0. Audited predecessor:
 `f354f0328ba33e10f98b8018e886d170c8d72c0d` (#133).
 
-## Latest exact-observation increment
+## Latest header-summary increment
+
+Local source `b3cb493`, review correction `55b4f80`: the top bar presents readable
+status, freshness and priority component impact, with full affected-work scope
+in the accessible name. Unknown observation freshness cannot appear normal.
+Cache failure is included, and a completed Task no longer conceals an independent
+system limitation in compact view. Text width is measured; when the compact
+summary cannot share a narrow row with branding, branding yields first without
+shrinking text or replacing the focused button.
+
+The two review defects were reproduced publicly and corrected. Standards reports
+2 P2 resolved/0 new; Spec reports 1 P2 resolved/0 new (one overlaps). Eight header
+cases plus two real exact-Task cases pass the targeted run, 10 passed in 6.87 s.
+The candidate source's related regression was 255 passed in 438.10 s; corrected
+source `55b4f803fdb51a42cbc0028e2b8cb24c7360fe33` final related regression is
+**257 passed in 394.12 s**, with zero failures, errors or skips. Actual final
+frames were inspected at 640×360, 960×480, 960×540 and 3840×2160, text 200%, DPR1;
+the 640 check certifies the header only, not the entire small workspace. Detailed
+scope, immutable red/green reports and hashes remain in
+`frontend-v21-issue134-health-routing-progress.md`.
+
+These are offscreen Software/QAccessible checks, not native Windows UIA,
+physical DPI, Narrator, normal/package entry or cold-start acceptance. The popup's
+complete per-group observation times/expiry and the other ticket gates remain open.
+
+## Previous exact-observation increment
 
 Local source `b05f62e`, review correction `2d11870`: exact Run/Evidence remount
 probes are now permanent; health identifies the observed Campaign member, excludes

@@ -4,6 +4,146 @@ Date: 2026-09-14. This is implementation progress, **not ticket acceptance**.
 The full #133–#171 goal remains active. No remote publication, main merge,
 release, production-default switch or system configuration change was performed.
 
+## Header-summary increment — 2026-09-14
+
+Fixed predecessor `ab30fc85ad8bf63b18e4dd36af5651955b190019`; candidate source
+`b3cb493d4ce5e762f3a1b7fd7b4b2c551ab50433`. This increment presents existing
+typed SystemHealth observations in the top bar; it does not change the Feature
+Interface, action capabilities, execution ownership or persistence schema.
+
+- A readable overall label, observation freshness and highest-priority component
+  concern replace the raw presentation enum. The existing aggregate includes
+  cache and queue, unlike the former runtime presentation alone. Known failure
+  with a fresh observation remains a failure; unverified recovery is not normal.
+- The complete summary explains the affected legacy work from typed component
+  impacts. It never invents an associated Task when none was selected.
+- The header measures actual font advance before using a compact summary on the
+  same button. The complete accessible name remains available. No animation,
+  additional commands, cards or decorative panels were introduced. The UI skills
+  informed the restrained content priority and measured layout, not new scope.
+- Six permanent public fake-Feature/QML cases cover failure, exact scope, reflow,
+  cache aggregation, paused queue versus failed Task, and unverified recovery.
+  Two existing live AppContext/exact-Task cases also check the readable accessible
+  header without replacing their persisted identity and keyboard assertions.
+
+All reports below are in the existing `issue134-20260914` scratch evidence root.
+
+| Behavior | Causal red | Initial green |
+| --- | --- | --- |
+| Visible persistence impact | `health-header-impact-red.xml`: 1 failed | `health-header-independent-observations-green.xml`: 1 passed |
+| Exact affected-work scope | `health-header-scoped-impact-red.xml`: 1 failed, 1 passed | `health-header-scoped-impact-green.xml`: 2 passed |
+| Long header fits 960 logical width at text 200% | `health-header-reflow-red.xml`: 1 failed, 2 passed; right edge 1100 > 960 | `health-header-reflow-green.xml`: 3 passed |
+| Cache failure cannot appear normal | `health-header-cache-summary-red.xml`: 1 failed, 3 passed | `health-header-cache-summary-green.xml`: 4 passed |
+| Failed Task is not global system failure | `health-header-context-failure-red.xml`: 1 failed, 4 passed | `health-header-context-failure-green.xml`: 5 passed |
+| Partial recovery does not imply reliable observation | `health-header-unverified-recovery-red.xml`: 1 failed, 5 passed | `health-header-unverified-recovery-green.xml`: 6 passed, 3.89 s console |
+
+Review-stage shared setup plus both live cases:
+`health-header-reviewed-setup-live.xml`: **8 passed**, 6.38 s console.
+SHA-256 `639C0F526AA28657739DA1611BF0F3B0C5E7905E96CB1AA833E36DD91AA4476E`.
+The unverified-recovery red SHA-256 is
+`FFEA7090D2A15D918710CAA6B61DBEC8055C0A9B7D7A573294C4F6A9AB6D9C3F`.
+
+Intermediate reports with `impact-green`, `impact-delivered-green`,
+`impact-authoritative-green`, `impact-state-probe`, `impact-exact-input-green`
+and `queue-summary-red` in their names contain setup/wait or classification
+assumptions, not additional causal product reds. Runtime and data-source delivery
+are independent; snapshot revision is not a promise of QML notification; a queue
+read failure retains a degraded prior observation rather than becoming unavailable.
+Those reports remain unchanged and are not relabelled as passing evidence.
+
+### Initial independent review
+
+- Standards identified two P2 findings. First, compact text lacked a width check in the
+  application's reachable 640×360 minimum. With text 200%, a superseded Task
+  association and awaiting-first-state freshness, the actual button ended at
+  x=673 while the actual client remained width 640.
+- Both axes identified the other P2: in 960×480/text 200%, a completed Task hid an
+  independent persistence failure in the visible compact summary. The accessible
+  name retained the failure but did not substitute for visible priority impact.
+- Both were reproduced through public inputs in
+  `health-header-review-longest-observation-red.xml`: **2 failed**, 3.20 s console.
+  `health-header-review-combinations-red.xml` and `health-header-review-longest-red.xml`
+  each have 1 failed/1 passed; their shorter fresh text did not reproduce overflow.
+
+### Review correction and source binding
+
+The candidate `b3cb493` combined regression completed with **255 passed** in
+438.10 s console. This confirms its retained journeys, not the two review cases
+that were discovered separately. It is not the corrected-source final report.
+
+Correction `55b4f803fdb51a42cbc0028e2b8cb24c7360fe33` shares one presentation-only
+component concern selection between full and compact text. Compact text now
+keeps the priority component and its failure; the associated Task's terminal
+state stays in the full summary and accessible name. The actual compact text is
+also measured. When it cannot share the row with branding, branding is hidden
+first; the same health button and text size remain. No document string parsing,
+Feature-contract change or action gating was introduced.
+
+Both public reproducers are permanent tests. The long-text case checks actual
+640×360 → 960×480 → 3840×2160 → 640×360 clients at text 200%, visible button and
+label bounds, preserved focus, Space opening and Escape return without changing
+route. The completed-Task case requires a visible persistence failure and retains
+the terminal Task explanation in its full accessible name. The summary module
+now has eight cases; together with both retained live cases the targeted report
+`health-header-review-fixes-targeted-green.xml` is **10 passed**, 6.87 s console.
+
+| Review artifact | SHA-256 |
+| --- | --- |
+| `health-header-candidate-full-regression.xml` | `3176056241D721C7E17AD75698EDCC9C7A1FF4F14A71EFEE55BDF5FEFA811AF9` |
+| `health-header-review-longest-observation-red.xml` | `A78E72B76397F5068FA9010176401B1B3E824DBC2CEBC7B33F51CC645BA98C20` |
+| `health-header-review-fixes-targeted-green.xml` | `5A65838B35ACF0025C9429B7816A1765AE422E6557DCDCB5277761EF334F3090` |
+
+#### Standards
+
+Independent recheck of verified nonempty `ab30fc8...55b4f80` confirms both P2
+findings resolved: no new hard-standard violation or actionable heuristic smell.
+Measured compact reflow conforms to ADR0039; component-first visible impact and
+retained task details conform to ADR0042. The reviewer inspected source and the
+targeted XML, did not run tests or edit files, and did not certify the whole ticket.
+
+#### Spec
+
+Independent recheck of the same range confirms its P2 resolved, with no new
+deviation. Compact component impact and freshness conform to D14; hiding the
+brand first respects its content priority. No Feature contract or execution
+capability was changed. The reviewer did not run tests or certify all D14/#134.
+
+Review summary: Standards 2 P2 resolved, 0 new; Spec 1 P2 resolved, 0 new. One
+finding overlaps between axes; this represents two distinct product defects.
+
+### Final corrected-source evidence
+
+On unchanged committed source `55b4f803fdb51a42cbc0028e2b8cb24c7360fe33`,
+`health-header-reviewed-full-regression.xml` reports **257 passed**, 394.12 s
+console (394.046 s JUnit), zero failures, errors or skips. All test processes
+terminated; source/tests were not edited during the run. The prior 249 cases plus
+eight header cases ran across 14 modules, including real Task retry/reopen,
+persisted exact observation, execution continuity and retained six-Feature paths.
+This is a related regression, not the entire repository suite or ticket acceptance.
+
+Final actual QML frames were inspected in `health-header-frames-final/`: compact
+960×480 and 960×540/text 200% retain the visible persistence failure; 3840×2160
+keeps the full impact scope; 640×360 shows the longest superseded/unknown-age text
+without branding and without truncating the header. All record DPR 1.0, with
+application text scale independent of DPI. The wide inspection preview was resized
+to 2048×1152 by the image viewer; its saved source remains 3840×2160. Focus, Space
+and Escape assertions run against actual QML, not the resized preview.
+
+The 640 frame is header-specific evidence, not complete operability certification
+for the rest of that small workspace. The read-only legacy content density and
+technical-language popup are not final visual acceptance. Python 3.11.9 / PySide6
+6.9.1, isolated offscreen Software and QAccessible do not prove native UIA,
+Narrator, physical DPI, Direct3D11, startup or normal/package entry. No full D14,
+#134, production-default change or release PASS is claimed.
+
+| Final artifact | SHA-256 |
+| --- | --- |
+| `health-header-reviewed-full-regression.xml` | `5CB7F5C4CF89338344D9E6E7E5E8980846650BA44FC8B6DDBCB6FB20FED3D52D` |
+| `health-header-frames-final/health-header-640x360-2.0.png` | `B86A61D20A1806253E9E687E175971890B25A1763B020CE9C0FC398E4709BEDE` |
+| `health-header-frames-final/health-header-960x480-2.0.png` | `61883342A0B65E4F646D9472EE84C76C9F745BF5A28783E12EFED0168528CA27` |
+| `health-header-frames-final/health-header-960x540-2.0.png` | `D38480F35F73310979050965878725FBF8DA43F5D87C85ED6B26A6C0C846FF10` |
+| `health-header-frames-final/health-header-3840x2160-2.0.png` | `38E33607E896D744B9995EDD3F03D1E1D2150BE94C51FE9BB5736D051FD5D310` |
+
 ## Exact-observation increment — 2026-09-14
 
 Predecessor `571904c94ccd2d3a99bf83acb8d771216a3ca340`; initial source
@@ -139,10 +279,11 @@ reran tests or certified the entire ticket.
 Review summary: Standards 1 P2 resolved, 0 new; Spec 1 P2 resolved, 0 new. These
 are independent assessments of the same defect, not two distinct product bugs.
 
-Top-level visible freshness/priority impact, complete per-group observation age,
+At that earlier checkpoint, top-level visible freshness/priority impact, complete per-group observation age,
 generation-3 durable recovery, broader native reflow/UIA/focus, normal/package
 entry and cold-start gates remain unfinished. This local increment does not
-waive or pass any of those obligations.
+waive or pass any of those obligations. The later header increment above records
+its own narrower progress and remaining per-group/native/recovery/startup gates.
 
 ## Source and scope
 
