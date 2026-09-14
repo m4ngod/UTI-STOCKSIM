@@ -31,6 +31,7 @@ Item {
         parentKeys = []
         navigationError = ""
         selectedEntry = entries[index]
+        catalog.currentIndex = index
         detailScroll.contentItem.contentY = 0
         if (compact)
             listDrawer.close()
@@ -346,5 +347,13 @@ Item {
                     ? tokens.focusWidth : 0
             }
         }
+    }
+    Rectangle {
+        parent: catalog
+        anchors.fill: parent
+        color: "transparent"
+        visible: catalog.activeFocus && catalog.currentIndex < 0
+        border.color: tokens.focus
+        border.width: tokens.focusWidth
     }
 }

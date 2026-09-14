@@ -8,7 +8,7 @@ from pathlib import Path
 from time import monotonic, sleep
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPointF, Qt
 from PySide6.QtGui import QAccessible, QFont, QFontDatabase
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
@@ -60,6 +60,58 @@ def visible_item(root, name):
         if found := visible_item(child, name):
             return found
     return None
+
+
+def assert_visible_focus_outline(host, item):
+    QTest.qWait(30)
+    focus_color = host.rootObject().findChild(QObject, "designTokens").property("focus")
+    point = item.mapToScene(QPointF(1, 1))
+    frame = host.grabFramebuffer()
+    assert not frame.isNull()
+    assert frame.pixelColor(
+        round(point.x() * frame.devicePixelRatio()),
+        round(point.y() * frame.devicePixelRatio()),
+    ) == focus_color, "Keyboard focus must have a visible outline"
+
+
+@pytest.mark.parametrize("resource_context", ["fake"], indirect=True)
+@pytest.mark.parametrize("size,scale", [((1426, 786), 1.0), ((1880, 940), 2.0)])
+def test_mouse_selection_returns_to_a_visible_exact_catalog_row(resource_context, size, scale):
+    app, context = resource_context
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        scenario_lab_feature=context.scenario_lab_feature,
+        scenario_lab_context=context.scenario_lab_context,
+        initial_route="scenario_lab", research_shell=True,
+        accessibility_preferences=AccessibilityPreferences(text_scale=scale, reduced_motion=True),
+    )
+    host.resize(*size)
+    host.show()
+    try:
+        root = host.rootObject()
+        catalog = root.findChild(QQuickItem, "researchScenarioPageList")
+        until(app, lambda: catalog.property("count") >= 2)
+        QTest.qWait(30)
+        row = next(item for item in catalog.property("contentItem").childItems()
+                   if item.property("index") == 1 and item.property("text"))
+        QTest.mouseClick(host.quickWindow(), Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier, row.mapToScene(row.boundingRect().center()).toPoint())
+        details = root.findChild(QQuickItem, "researchScenarioPageDetails")
+        assert details.hasActiveFocus()
+        selected_text = details.property("text")
+        assert row.property("highlighted")
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Tab, Qt.KeyboardModifier.ShiftModifier)
+        assert catalog.hasActiveFocus()
+        assert_visible_focus_outline(host, row)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        assert details.hasActiveFocus()
+        assert details.property("text") == selected_text
+    finally:
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
 
 
 @pytest.mark.parametrize("resource_context", ["fake"], indirect=True)
@@ -640,6 +692,8 @@ def test_archive_related_focus_tracks_reliable_source_or_falls_back_on_invalidat
             assert "尚未选择旧运行的证据" not in details.property("text")
             parent_control = root.findChild(QQuickItem, "researchArchivePageListButton") if compact else catalog
             assert parent_control.hasActiveFocus() and parent_control.isVisible()
+            if not compact:
+                assert_visible_focus_outline(host, catalog)
         else:
             assert visible_item(root, "researchArchivePageLink0").hasActiveFocus()
             QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
