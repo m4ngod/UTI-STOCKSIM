@@ -4,7 +4,28 @@ Date: 2026-09-14. Ticket: https://github.com/m4ngod/UTI-STOCKSIM/issues/134.
 Parent: published specification #132 v1.0. Audited predecessor:
 `f354f0328ba33e10f98b8018e886d170c8d72c0d` (#133).
 
-## Latest native retained recovery and real execution continuity
+## Latest clause audit and large Archive measurements
+
+The [clause-level ledger](frontend-v21-issue134-acceptance-ledger.md) maps the
+freshly read #134 acceptance body to accumulated evidence and supersedes generic
+historical remaining-work lists. A fresh read of all 39 formal implementation
+tickets confirms #134 is the only open ticket with closed prerequisites.
+
+The missing large-data measurement is now recorded for the real reopened
+1,055-item Archive at actual 960x480/text200/DPR1 in Software and Direct3D11.
+Native input reaches the final row and reads its exact finding. Four matching
+input-to-rendered-state samples range from 6.26 to 37.86 ms; whole-process resource
+snapshots and precise measurement boundaries are retained in the
+[large Archive report](frontend-v21-issue134-large-archive-renderers.md).
+Single samples are not a performance or memory-budget PASS.
+
+No production/test code changed. Native readonly-property and accurate native
+focus reporting remain unverified through the supported official observer.
+The ledger identifies this remaining local acceptance requirement explicitly;
+additional repetitions of covered layouts or real-source recovery do not replace
+it. #134 and the full #132/#133–171 initiative remain incomplete.
+
+## Previous native retained recovery and real execution continuity
 
 Two real-persistence sessions at `8507b6d` now confirm the complete Scenario
 wait/failure/retry sequence: actual 1426x786/text100/Software and
