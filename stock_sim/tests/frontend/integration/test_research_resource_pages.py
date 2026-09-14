@@ -202,6 +202,9 @@ def test_scenario_page_distinguishes_approved_versions_from_legacy_draft_recover
         state = context.scenario_lab_feature.snapshot(context.scenario_lab_context)
         catalog = host.rootObject().findChild(QQuickItem, "researchScenarioPageList")
         expected_count = len(state.market_scenarios) + len(state.approved_recipe_versions) + len(state.recipe_drafts)
+        # A reliable Feature read does not imply queued delivery reached the QML
+        # catalogue. Observe the public page projection as on other pages.
+        until(app, lambda: catalog.property("count") == expected_count)
         assert catalog.property("count") == expected_count
         offset = len(state.market_scenarios)
         if kind == "draft":

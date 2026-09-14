@@ -254,3 +254,87 @@ def test_scenario_database_read_failure_ends_waiting_and_preserves_stale_content
         host.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         app.processEvents()
+
+
+@pytest.mark.parametrize("all_features", [False, True])
+def test_research_view_remount_is_responsive_during_real_computation(live_execution, all_features):
+    app, context, application, _, gate = live_execution
+    feature = context.diagnostic_tasks_feature
+    approved = _approved_formal_task(feature)
+    hosts = []
+    worker = ThreadPoolExecutor(max_workers=1)
+
+    def open_scenario():
+        host = JourneyWorkspaceHost(
+            context.run_monitoring_feature,
+            strategy_library_feature=context.strategy_library_feature if all_features else None,
+            strategy_library_queries=context.strategy_library_queries if all_features else None,
+            feature_capabilities=context.feature_capabilities() if all_features else None,
+            scenario_lab_feature=context.scenario_lab_feature,
+            diagnostic_tasks_feature=feature if all_features else None,
+            diagnostic_tasks_context=DiagnosticTasksContext(task_id=approved.task_id) if all_features else None,
+            evidence_feature=context.evidence_and_findings_feature if all_features else None,
+            system_health_feature=context.system_health_feature,
+            initial_route="scenario_lab", research_shell=True,
+        )
+        hosts.append(host)
+        host.resize(1426, 786)
+        host.show()
+        app.processEvents()
+        return host
+
+    try:
+        original = open_scenario()
+        catalog = original.rootObject().findChild(QQuickItem, "researchScenarioPageList")
+        until(app, lambda: catalog.property("count") > 0)
+        original.close_adapter()
+        original.close()
+        original.deleteLater()
+        hosts.remove(original)
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+        pending = worker.submit(feature.start_formal_diagnostic_campaign,
+            StartFormalDiagnosticCampaign(
+                command_id=DiagnosticCommandId("scenario-remount-start"),
+                idempotency_key=DiagnosticCommandIdempotencyKey("scenario-remount-start"),
+                task_id=approved.task_id, expected_revision=approved.revision,
+                approved_revision=approved.revision,
+            ))
+        until(app, gate.entered.is_set)
+        assert not pending.done()
+        replacement = open_scenario()
+        assert not pending.done() and not gate.expired.is_set(), (
+            "Reopening Scenario waited for the active calculation")
+        page = replacement.rootObject().findChild(QQuickItem, "researchScenarioPage")
+        assert "正在读取场景资源" in page.property("statusText")
+        health = replacement.rootObject().findChild(QQuickItem, "researchHealthButton")
+        health.forceActiveFocus()
+        QTest.keyClick(replacement.quickWindow(), Qt.Key.Key_Space)
+        app.processEvents()
+        assert replacement.rootObject().findChild(QObject, "researchHealthPopup").property("opened")
+        QTest.keyClick(replacement.quickWindow(), Qt.Key.Key_Escape)
+        app.processEvents()
+        assert health.hasActiveFocus()
+        assert not pending.done()
+        gate.release.set()
+        until(app, pending.done)
+        receipt = pending.result()
+        assert receipt.accepted and receipt.affected_task_id == approved.task_id
+        assert receipt.affected_campaign_id is not None
+        assert application.diagnostic_campaign_status(receipt.affected_campaign_id.value).completed_count == 1
+        catalog = replacement.rootObject().findChild(QQuickItem, "researchScenarioPageList")
+        until(app, lambda: catalog.property("count") > 0
+              and "正在读取" not in page.property("statusText"))
+        catalog.forceActiveFocus()
+        QTest.keyClick(replacement.quickWindow(), Qt.Key.Key_Home)
+        QTest.keyClick(replacement.quickWindow(), Qt.Key.Key_Return)
+        assert replacement.rootObject().findChild(QQuickItem, "researchScenarioPageDetails").property("text")
+    finally:
+        gate.release.set()
+        worker.shutdown(wait=True)
+        for host in hosts:
+            host.close_adapter()
+            host.close()
+            host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()

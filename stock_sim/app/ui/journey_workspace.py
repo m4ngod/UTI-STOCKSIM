@@ -29,6 +29,7 @@ from PySide6.QtWidgets import QWidget
 from app.features.capabilities import FeatureCapabilityCatalog
 from app.features.strategy_asset_contract import StrategyAssetQueriesFeature
 from app.ui.strategy_asset_inspector import StrategyAssetInspectorQtAdapter
+from app.ui.feature_observation import FeatureObservation
 
 from app.features import (
     ApproveDiagnosticTaskConfiguration,
@@ -291,12 +292,19 @@ class StrategyLibraryQtAdapter(QObject):
         context: StrategyLibraryContext | None = None,
         bookmark_sink: Callable[[StrategySelectionBookmark], None] | None = None,
         route_active: bool = True,
+        nonblocking_observation: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._feature = feature
         self._context = context or StrategyLibraryContext()
-        self._state = feature.snapshot(self._context)
+        self._observation = (
+            FeatureObservation[StrategyLibraryContext, StrategyLibraryViewState](feature, parent=self)
+            if nonblocking_observation else None
+        )
+        self._state: StrategyLibraryViewState | None = (
+            None if nonblocking_observation else feature.snapshot(self._context)
+        )
         self._comparison_entries: tuple[StrategyLibraryEntry, ...] = ()
         self._comparison_source: tuple[str, int] | None = None
         self._bookmark_sink = bookmark_sink
@@ -312,9 +320,31 @@ class StrategyLibraryQtAdapter(QObject):
         )
         self._subscription: Subscription | None = (
             feature.subscribe(self._context, self._queue_state)
-            if route_active
+            if route_active and self._observation is None
             else None
         )
+
+        if self._observation is not None:
+            self._observation.stateReady.connect(
+                self._accept_observation, Qt.ConnectionType.QueuedConnection,
+            )
+            self._observation.statusChanged.connect(self.stateChanged)
+            self._observation.start(self._context, observe=route_active)
+
+    @Slot(int, object)
+    def _accept_observation(self, generation: int, state: StrategyLibraryViewState) -> None:
+        if self._observation is not None and self._observation.is_current(generation):
+            self._accept_state(self._mount_generation.value, state)
+
+    def _observation_status(self) -> str:
+        observation = self._observation
+        if observation is None:
+            return ""
+        if observation.failed:
+            return "组合库观察暂不可用；可重新进入页面重试。"
+        if observation.pending:
+            return "正在读取组合库资源；后台计算继续。"
+        return ""
 
     def _queue_state(self, state: StrategyLibraryViewState) -> None:
         if not self._closed and self._route_active:
@@ -328,7 +358,9 @@ class StrategyLibraryQtAdapter(QObject):
     ) -> None:
         if self._closed or mount_generation != self._mount_generation.value:
             return
-        if state.context != self._context or state.revision <= self._state.revision:
+        if state.context != self._context or (
+            self._state is not None and state.revision <= self._state.revision
+        ):
             return
         incoming_source = (
             "" if state.source_revision is None else state.source_revision.value,
@@ -348,26 +380,38 @@ class StrategyLibraryQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def presentationState(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "failed" if self._observation is not None and self._observation.failed else "loading"
         return self._state.presentation.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def freshness(self) -> str:
+        if self._state is None:
+            return "unknown"
+        if self._observation_status() and self._state.last_reliable_inventory is not None:
+            return "stale"
         return self._state.freshness.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def sourceRevision(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         return (
             "Unavailable"
             if self._state.source_revision is None
             else self._state.source_revision.value
         )
 
-    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
-    def sourceGeneration(self) -> int:  # noqa: N802
+    @Property("QVariant", notify=stateChanged)  # type: ignore[arg-type]
+    def sourceGeneration(self) -> int | None:  # noqa: N802
+        if self._state is None:
+            return None
         return self._state.source.generation.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def focusRestorationId(self) -> str:  # noqa: N802
+        if self._state is None:
+            return ""
         focus = self._state.focus_restoration_id
         return "" if focus is None else focus.value
 
@@ -390,10 +434,14 @@ class StrategyLibraryQtAdapter(QObject):
 
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def entryCount(self) -> int:  # noqa: N802
+        if self._state is None:
+            return 0
         return len(self._state.entries)
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def entries(self) -> list[dict[str, object]]:
+        if self._state is None:
+            return []
         return [
             _strategy_library_entry_payload(item) for item in self._state.entries
         ]
@@ -411,22 +459,32 @@ class StrategyLibraryQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canCompare(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return self._state.capabilities.can_compare
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canSelectFormalSet(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return self._state.capabilities.can_select_formal_strategy_set
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def selectionStatus(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         return self._state.selection_status.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def selectionMessage(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         return self._state.selection_message
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def selectionContextId(self) -> str:  # noqa: N802
+        if self._state is None:
+            return ""
         selection = self._state.selection
         return "" if selection is None else selection.context_identity
 
@@ -437,6 +495,8 @@ class StrategyLibraryQtAdapter(QObject):
         return tuple(item.strategy_id for item in selection.selections)
 
     def current_formal_strategy_selection(self) -> StrategySelectionContext | None:
+        if self._state is None:
+            return None
         selection = self._state.selection
         if (
             self._state.selection_status.value != "current"
@@ -471,6 +531,11 @@ class StrategyLibraryQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def statusMessage(self) -> str:  # noqa: N802
+        observation_status = self._observation_status()
+        if observation_status:
+            return observation_status
+        if self._state is None:
+            return self._observation_status() or "尚未获得组合库资源观察。"
         if self._state.error is not None:
             return self._state.error.message
         messages = {
@@ -492,11 +557,20 @@ class StrategyLibraryQtAdapter(QObject):
     def refresh(self) -> None:
         if self._closed:
             return
+        if self._observation is not None:
+            self._observation.start(self._context, observe=self._route_active)
+            return
+        if self._closed:
+            return
         state = self._feature.snapshot(self._context)
         self._accept_state(self._mount_generation.value, state)
 
     @Slot()
     def compareFormalSet(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "组合库资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         if self._closed or not self.canCompare:
             return
         entries = self._formal_entries()
@@ -524,6 +598,10 @@ class StrategyLibraryQtAdapter(QObject):
 
     @Slot()
     def selectFormalSet(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "组合库资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         if self._closed or not self.canSelectFormalSet:
             return
         entries = self._formal_entries()
@@ -569,6 +647,8 @@ class StrategyLibraryQtAdapter(QObject):
         self.stateChanged.emit()
 
     def _formal_entries(self) -> tuple[StrategyLibraryEntry, ...]:
+        if self._state is None:
+            return ()
         inventory = self._state.last_reliable_inventory
         if inventory is None:
             return ()
@@ -613,6 +693,10 @@ class StrategyLibraryQtAdapter(QObject):
 
     @Slot(str)
     def setFocusStrategy(self, value: str) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "组合库资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         if self._closed:
             return
         strategy_id = StrategyUnderTestId(value)
@@ -650,6 +734,11 @@ class StrategyLibraryQtAdapter(QObject):
             subscription.dispose()
         self._mount_generation = _next_mount_generation()
         self._context = context
+        if self._observation is not None:
+            if self._state is not None and self._state.context != context:
+                self._state = None
+            self._observation.start(context, observe=self._route_active)
+            return
         self._state = self._feature.snapshot(context)
         current_source = (
             ""
@@ -678,6 +767,12 @@ class StrategyLibraryQtAdapter(QObject):
             return
         self._route_active = active
         self._mount_generation = _next_mount_generation()
+        if self._observation is not None:
+            if active:
+                self._observation.start(self._context, observe=True)
+            else:
+                self._observation.stop()
+            return
         subscription = self._subscription
         self._subscription = None
         if subscription is not None:
@@ -694,6 +789,8 @@ class StrategyLibraryQtAdapter(QObject):
         if self._closed:
             return
         self._closed = True
+        if self._observation is not None:
+            self._observation.close()
         self._route_active = False
         self._mount_generation = _next_mount_generation()
         subscription = self._subscription
@@ -784,7 +881,6 @@ class ScenarioLabQtAdapter(QObject):
 
     stateChanged = Signal()
     deliveryRequested = Signal(int, object)
-    observationFinished = Signal(int, str)
 
     def __init__(
         self,
@@ -801,7 +897,13 @@ class ScenarioLabQtAdapter(QObject):
         super().__init__(parent)
         self._feature = feature
         self._context = context or ScenarioLabContext()
-        self._state = feature.snapshot(self._context)
+        self._observation = (
+            FeatureObservation[ScenarioLabContext, ScenarioLabViewState](feature, parent=self)
+            if nonblocking_observation else None
+        )
+        self._state: ScenarioLabViewState | None = (
+            None if nonblocking_observation else feature.snapshot(self._context)
+        )
         self._selected_draft_id: str | None = None
         self._selected_recipe_version_id: str | None = None
         self._formal_strategy_selection_provider = (
@@ -814,69 +916,41 @@ class ScenarioLabQtAdapter(QObject):
         )
         self._mount_generation = _next_mount_generation()
         self._route_active = route_active
-        self._nonblocking_observation = nonblocking_observation
         self._subscription_lock = Lock()
-        self._observation_message = ""
         self._closed = False
         self.deliveryRequested.connect(
             self._accept_state,
             Qt.ConnectionType.QueuedConnection,
         )
-        self.observationFinished.connect(
-            self._finish_observation, Qt.ConnectionType.QueuedConnection,
-        )
         self._subscription: Subscription | None = None
-        if route_active:
-            if nonblocking_observation:
-                self._start_observation()
-            else:
-                self._subscription = feature.subscribe(self._context, self._queue_state)
 
-    def _start_observation(self) -> None:
-        generation = self._mount_generation.value
-        context = self._context
-        self._observation_message = "正在读取场景资源；后台计算继续，保留上次有效观察。"
-        self.stateChanged.emit()
-        Thread(
-            target=self._observe_worker, args=(generation, context),
-            name="research-scenario-observation", daemon=True,
-        ).start()
+        if self._observation is not None:
+            self._observation.stateReady.connect(
+                self._accept_observation, Qt.ConnectionType.QueuedConnection,
+            )
+            self._observation.statusChanged.connect(self.stateChanged)
+            self._observation.start(self._context, observe=route_active)
+        elif route_active:
+            self._subscription = feature.subscribe(self._context, self._queue_state)
 
-    def _observe_worker(self, generation: int, context: ScenarioLabContext) -> None:
-        def deliver(state: ScenarioLabViewState) -> None:
-            if self._closed or not self._route_active or generation != self._mount_generation.value:
-                return
-            try:
-                self.deliveryRequested.emit(generation, state)
-            except RuntimeError:
-                return  # The view can be deleted after the generation check.
+    @Slot(int, object)
+    def _accept_observation(self, generation: int, state: ScenarioLabViewState) -> None:
+        if self._observation is not None and self._observation.is_current(generation):
+            self._accept_state(self._mount_generation.value, state)
 
-        error = ""
-        try:
-            subscription = self._feature.subscribe(context, deliver)
-        except Exception:  # noqa: BLE001 - isolate read-boundary failures from the Qt observation.
-            error = "场景资源观察暂不可用；可重新进入场景库重试。"
-        else:
-            with self._subscription_lock:
-                obsolete = (
-                    self._closed or not self._route_active
-                    or generation != self._mount_generation.value
-                )
-                if not obsolete:
-                    self._subscription = subscription
-            if obsolete:
-                subscription.dispose()
-        try:
-            self.observationFinished.emit(generation, error)
-        except RuntimeError:
-            return
-
-    @Slot(int, str)
-    def _finish_observation(self, generation: int, error: str) -> None:
-        if self._closed or generation != self._mount_generation.value:
-            return
-        self._observation_message = error
-        self.stateChanged.emit()
+    def _observation_status(self) -> str:
+        observation = self._observation
+        if observation is None:
+            return ""
+        if observation.failed:
+            return "场景资源观察暂不可用；可重新进入场景库重试。"
+        if observation.pending:
+            return (
+                "正在读取场景资源；后台计算继续。"
+                if self._state is None else
+                "正在读取场景资源；后台计算继续，保留上次有效观察。"
+            )
+        return ""
 
     def _queue_state(self, state: ScenarioLabViewState) -> None:
         if not self._closed and self._route_active:
@@ -886,7 +960,9 @@ class ScenarioLabQtAdapter(QObject):
     def _accept_state(self, mount_generation: int, state: ScenarioLabViewState) -> None:
         if self._closed or mount_generation != self._mount_generation.value:
             return
-        if state.context != self._context or state.revision <= self._state.revision:
+        if state.context != self._context or (
+            self._state is not None and state.revision <= self._state.revision
+        ):
             return
         self._state = state
         if self._selected_draft_id is not None and not any(
@@ -903,11 +979,18 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def presentationState(self) -> str:  # noqa: N802
+        if self._state is None:
+            return (
+                "failed" if self._observation is not None and self._observation.failed
+                else "loading"
+            )
         return self._state.presentation.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def freshness(self) -> str:
-        if self._observation_message and self._state.last_reliable_inventory is not None:
+        if self._state is None:
+            return "unknown"
+        if self._observation_status() and self._state.last_reliable_inventory is not None:
             # This is the page's observation freshness, not a mutation of the
             # authoritative Feature snapshot retained during the pending read.
             return "stale"
@@ -915,14 +998,18 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def sourceRevision(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         return (
             "Unavailable"
             if self._state.source_revision is None
             else self._state.source_revision.value
         )
 
-    @Property(int, notify=stateChanged)  # type: ignore[arg-type]
-    def sourceGeneration(self) -> int:  # noqa: N802
+    @Property("QVariant", notify=stateChanged)  # type: ignore[arg-type]
+    def sourceGeneration(self) -> int | None:  # noqa: N802
+        if self._state is None:
+            return None
         return self._state.source.generation.value
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
@@ -931,6 +1018,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def availableMarkets(self) -> list[str]:  # noqa: N802
+        if self._state is None:
+            return []
         inventory = self._state.last_reliable_inventory
         if inventory is None:
             return []
@@ -938,6 +1027,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def availableLayers(self) -> list[str]:  # noqa: N802
+        if self._state is None:
+            return []
         inventory = self._state.last_reliable_inventory
         if inventory is None:
             return []
@@ -945,6 +1036,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def availableSources(self) -> list[str]:  # noqa: N802
+        if self._state is None:
+            return []
         inventory = self._state.last_reliable_inventory
         if inventory is None:
             return []
@@ -954,6 +1047,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def availableRecipeVersions(self) -> list[str]:  # noqa: N802
+        if self._state is None:
+            return []
         inventory = self._state.last_reliable_inventory
         if inventory is None:
             return []
@@ -963,6 +1058,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def availableTransformationFamilies(self) -> list[str]:  # noqa: N802
+        if self._state is None:
+            return []
         inventory = self._state.last_reliable_inventory
         if inventory is None:
             return []
@@ -972,6 +1069,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def availableCompatibilities(self) -> list[str]:  # noqa: N802
+        if self._state is None:
+            return []
         inventory = self._state.last_reliable_inventory
         if inventory is None:
             return []
@@ -984,6 +1083,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def availableReproducibilities(self) -> list[str]:  # noqa: N802
+        if self._state is None:
+            return []
         inventory = self._state.last_reliable_inventory
         if inventory is None:
             return []
@@ -1046,46 +1147,68 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def historicalSegmentCount(self) -> int:  # noqa: N802
+        if self._state is None:
+            return 0
         return len(self._state.historical_segments)
 
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def referencePathCount(self) -> int:  # noqa: N802
+        if self._state is None:
+            return 0
         return len(self._state.reference_paths)
 
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def marketScenarioCount(self) -> int:  # noqa: N802
+        if self._state is None:
+            return 0
         return len(self._state.market_scenarios)
 
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def recipeDraftCount(self) -> int:  # noqa: N802
+        if self._state is None:
+            return 0
         return len(self._state.recipe_drafts)
 
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def recipeValidationCount(self) -> int:  # noqa: N802
+        if self._state is None:
+            return 0
         return len(self._state.recipe_validations)
 
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def approvedRecipeVersionCount(self) -> int:  # noqa: N802
+        if self._state is None:
+            return 0
         return len(self._state.approved_recipe_versions)
 
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def taskHandleCount(self) -> int:  # noqa: N802
+        if self._state is None:
+            return 0
         return len(self._state.task_handles)
 
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def scenarioSetCount(self) -> int:  # noqa: N802
+        if self._state is None:
+            return 0
         return len(self._state.scenario_sets)
 
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def executionResolutionCount(self) -> int:  # noqa: N802
+        if self._state is None:
+            return 0
         return len(self._state.execution_resolutions)
 
     @Property(int, notify=stateChanged)  # type: ignore[arg-type]
     def selectionContextCount(self) -> int:  # noqa: N802
+        if self._state is None:
+            return 0
         return len(self._state.selection_contexts)
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def scenarioSets(self) -> list[dict[str, object]]:  # noqa: N802
+        if self._state is None:
+            return []
         return [
             _formal_scenario_set_payload(item)
             for item in self._state.scenario_sets
@@ -1093,6 +1216,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def executionResolutions(self) -> list[dict[str, object]]:  # noqa: N802
+        if self._state is None:
+            return []
         return [
             _scenario_execution_resolution_payload(item)
             for item in self._state.execution_resolutions
@@ -1100,12 +1225,16 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def selectionContexts(self) -> list[dict[str, object]]:  # noqa: N802
+        if self._state is None:
+            return []
         return [
             _scenario_selection_context_payload(item)
             for item in self._state.selection_contexts
         ]
 
     def current_diagnostic_selection(self) -> ScenarioDiagnosticSelection | None:
+        if self._state is None:
+            return None
         if (
             self._state.freshness.value != "fresh"
             or self._state.presentation.value not in {"ready", "partial"}
@@ -1162,6 +1291,8 @@ class ScenarioLabQtAdapter(QObject):
         )
 
     def journey_selection(self) -> JourneyScenarioSelection | None:
+        if self._state is None:
+            return None
         selection = self.current_diagnostic_selection()
         if selection is None:
             return None
@@ -1252,10 +1383,14 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canComposeScenarioSet(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return self._state.capabilities.can_compose_scenario_set
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canResolveExecutionAssumptions(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return (
             self._state.capabilities.can_resolve_execution_assumptions
             and len(self._formal_strategy_selection_provider()) == 2
@@ -1263,6 +1398,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canSelectFormalScenarioSet(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return self._state.capabilities.can_select_formal_scenario_set
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
@@ -1271,16 +1408,22 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canCreateRecipeDraft(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return self._state.capabilities.can_create_recipe_draft
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canCreateAiAssistedRecipeDraft(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return (
             self._state.capabilities.can_create_ai_assisted_recipe_draft
         )
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def aiAuthoringStatus(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         inventory = self._state.last_reliable_inventory
         if inventory is None:
             return "AI Recipe authoring capability is awaiting authoritative state."
@@ -1295,6 +1438,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canReviseRecipeDraft(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return (
             self._state.capabilities.can_revise_recipe_draft
             and self._selected_draft() is not None
@@ -1302,38 +1447,56 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canValidateRecipeDraft(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return self._state.capabilities.can_validate_recipe_draft
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canApproveRecipe(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return self._state.capabilities.can_approve_recipe
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canMaterializeApprovedRecipe(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return self._state.capabilities.can_materialize_reference_path
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canRetryMaterialization(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return self._state.capabilities.can_retry_materialization
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def historicalSegments(self) -> list[dict[str, object]]:  # noqa: N802
+        if self._state is None:
+            return []
         return [_historical_segment_payload(item) for item in self._state.historical_segments]
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def referencePaths(self) -> list[dict[str, object]]:  # noqa: N802
+        if self._state is None:
+            return []
         return [_reference_path_payload(item) for item in self._state.reference_paths]
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def marketScenarios(self) -> list[dict[str, object]]:  # noqa: N802
+        if self._state is None:
+            return []
         return [_market_scenario_payload(item) for item in self._state.market_scenarios]
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def recipeDrafts(self) -> list[dict[str, object]]:  # noqa: N802
+        if self._state is None:
+            return []
         return [_recipe_draft_payload(item) for item in self._state.recipe_drafts]
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def recipeValidations(self) -> list[dict[str, object]]:  # noqa: N802
+        if self._state is None:
+            return []
         return [
             _recipe_validation_payload(item)
             for item in self._state.recipe_validations
@@ -1341,6 +1504,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def approvedRecipeVersions(self) -> list[dict[str, object]]:  # noqa: N802
+        if self._state is None:
+            return []
         return [
             _approved_recipe_version_payload(item)
             for item in self._state.approved_recipe_versions
@@ -1348,6 +1513,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def taskHandles(self) -> list[dict[str, object]]:  # noqa: N802
+        if self._state is None:
+            return []
         return [
             _scenario_lab_task_handle_payload(item)
             for item in self._state.task_handles
@@ -1355,6 +1522,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def transformations(self) -> list[dict[str, object]]:
+        if self._state is None:
+            return []
         catalog = self._state.transformation_catalog
         if catalog is None:
             return []
@@ -1362,17 +1531,23 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def catalogVersion(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         catalog = self._state.transformation_catalog
         return "Unavailable" if catalog is None else catalog.catalog_version
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def focusRestorationIdentity(self) -> str:  # noqa: N802
+        if self._state is None:
+            return ""
         return self._state.focus_restoration_identity or ""
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def statusMessage(self) -> str:  # noqa: N802
-        if self._observation_message:
-            return self._observation_message
+        if self._state is None:
+            return self._observation_status() or "尚未获得场景资源观察。"
+        if self._observation_status():
+            return self._observation_status()
         if self._state.error is not None:
             return self._state.error.message
         return {
@@ -1698,6 +1873,10 @@ class ScenarioLabQtAdapter(QObject):
 
     @Slot(str)
     def selectRecipeDraft(self, draft_id: str) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "场景资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         if not any(item.draft_id.value == draft_id for item in self._state.recipe_drafts):
             return
         self._selected_draft_id = draft_id
@@ -1706,6 +1885,10 @@ class ScenarioLabQtAdapter(QObject):
 
     @Slot(str)
     def selectApprovedRecipeVersion(self, version_id: str) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "场景资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         version = next(
             (
                 item
@@ -1722,6 +1905,10 @@ class ScenarioLabQtAdapter(QObject):
 
     @Slot(str)
     def validateRecipeDraft(self, draft_id: str) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "场景资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         draft = next(
             (
                 item
@@ -1758,6 +1945,10 @@ class ScenarioLabQtAdapter(QObject):
 
     @Slot(str)
     def approveRecipeValidation(self, validation_id: str) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "场景资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         validation = next(
             (
                 item
@@ -1821,6 +2012,10 @@ class ScenarioLabQtAdapter(QObject):
 
     @Slot(str)
     def materializeApprovedRecipeVersion(self, version_id: str) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "场景资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         version = next(
             (
                 item
@@ -1868,6 +2063,10 @@ class ScenarioLabQtAdapter(QObject):
         attempt_id: str,
         task_handle_id: str,
     ) -> None:
+        if self._state is None:
+            self._command_message = "场景资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         predecessor = next(
             (
                 item
@@ -1916,6 +2115,10 @@ class ScenarioLabQtAdapter(QObject):
 
     @Slot()
     def composeVisibleScenarioSet(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "场景资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         inventory = self._state.last_reliable_inventory
         if inventory is None or not self.canComposeScenarioSet:
             return
@@ -1969,6 +2172,10 @@ class ScenarioLabQtAdapter(QObject):
 
     @Slot()
     def resolveLatestScenarioSet(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "场景资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         if not self.canResolveExecutionAssumptions:
             self._command_message = (
                 "Resolve assumptions after selecting the exact formal Strategy set."
@@ -2048,6 +2255,10 @@ class ScenarioLabQtAdapter(QObject):
 
     @Slot()
     def selectLatestFormalScenarioSet(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "场景资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         if not self.canSelectFormalScenarioSet:
             return
         scenario_set = next(
@@ -2173,6 +2384,10 @@ class ScenarioLabQtAdapter(QObject):
 
     @Slot(str)
     def setFocusIdentity(self, value: str) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_message = "场景资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         if not value:
             return
         target = ScenarioLabFocusTarget.HISTORICAL_SEGMENT
@@ -2185,6 +2400,8 @@ class ScenarioLabQtAdapter(QObject):
         )
 
     def _selected_draft(self) -> ScenarioRecipeDraftProjection | None:
+        if self._state is None:
+            return None
         return next(
             (
                 item
@@ -2195,6 +2412,8 @@ class ScenarioLabQtAdapter(QObject):
         )
 
     def _authoring_metadata(self, operation: str) -> ScenarioLabCommandMetadata:
+        if self._state is None:
+            raise ValueError("Scenario Lab observation is not available yet")
         if self._state.source_revision is None:
             raise ValueError("Scenario Lab source revision is unavailable")
         identity = uuid4().hex
@@ -2301,6 +2520,8 @@ class ScenarioLabQtAdapter(QObject):
         allow_partial_fills: bool,
         market_rule_profile_version: str,
     ) -> ScenarioRecipeDraftPayload:
+        if self._state is None:
+            raise ValueError("Scenario Lab observation is not available yet")
         segment = next(
             (
                 item
@@ -2417,8 +2638,11 @@ class ScenarioLabQtAdapter(QObject):
         message: str,
     ) -> None:
         self._command_message = f"{disposition.value}: {message}"
+        if self._observation is not None:
+            self.refresh()
+            return
         state = self._feature.snapshot(self._context)
-        if state.revision > self._state.revision:
+        if self._state is None or state.revision > self._state.revision:
             self._state = state
         self.stateChanged.emit()
 
@@ -2426,18 +2650,27 @@ class ScenarioLabQtAdapter(QObject):
     def refresh(self) -> None:
         if self._closed:
             return
+        if self._observation is not None:
+            self._observation.start(self._context, observe=self._route_active)
+            return
         state = self._feature.snapshot(self._context)
         self._accept_state(self._mount_generation.value, state)
 
     def _replace_context(self, context: ScenarioLabContext) -> None:
         if self._closed:
             return
-        subscription = self._subscription
-        self._subscription = None
+        self._mount_generation = _next_mount_generation()
+        with self._subscription_lock:
+            subscription = self._subscription
+            self._subscription = None
         if subscription is not None:
             subscription.dispose()
-        self._mount_generation = _next_mount_generation()
         self._context = context
+        if self._observation is not None:
+            if self._state is not None and self._state.context != context:
+                self._state = None
+            self._observation.start(context, observe=self._route_active)
+            return
         self._state = self._feature.snapshot(context)
         self._subscription = (
             self._feature.subscribe(context, self._queue_state)
@@ -2456,15 +2689,18 @@ class ScenarioLabQtAdapter(QObject):
             return
         self._route_active = active
         self._mount_generation = _next_mount_generation()
+        if self._observation is not None:
+            if active:
+                self._observation.start(self._context, observe=True)
+            else:
+                self._observation.stop()
+            return
         with self._subscription_lock:
             subscription = self._subscription
             self._subscription = None
         if subscription is not None:
             subscription.dispose()
         if active:
-            if self._nonblocking_observation:
-                self._start_observation()
-                return
             self._state = self._feature.snapshot(self._context)
             self._subscription = self._feature.subscribe(
                 self._context,
@@ -2476,6 +2712,8 @@ class ScenarioLabQtAdapter(QObject):
         if self._closed:
             return
         self._closed = True
+        if self._observation is not None:
+            self._observation.close()
         self._route_active = False
         self._mount_generation = _next_mount_generation()
         with self._subscription_lock:
@@ -3094,6 +3332,7 @@ class DiagnosticTasksQtAdapter(QObject):
             DiagnosticSetupSelectionCoordinator | None
         ) = None,
         route_active: bool = True,
+        nonblocking_observation: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -3109,10 +3348,16 @@ class DiagnosticTasksQtAdapter(QObject):
         initial_setup_selection = None
         if setup_selection_provider is not None:
             initial_setup_selection = self._observe_current_setup_selection()
-        self._state = feature.snapshot(self._context)
+        self._observation = (
+            FeatureObservation[DiagnosticTasksContext, DiagnosticTasksViewState](feature, parent=self)
+            if nonblocking_observation else None
+        )
+        self._state: DiagnosticTasksViewState | None = (
+            None if nonblocking_observation else feature.snapshot(self._context)
+        )
         self._setup_sources_diagnostic_generation = (
             None
-            if setup_selection_provider is None
+            if self._state is None or setup_selection_provider is None
             or (
                 initial_setup_selection is None
                 and not self._setup_selection_sources_current()
@@ -3146,9 +3391,31 @@ class DiagnosticTasksQtAdapter(QObject):
         )
         self._subscription: Subscription | None = (
             feature.subscribe(self._context, self._queue_state)
-            if route_active
+            if route_active and self._observation is None
             else None
         )
+
+        if self._observation is not None:
+            self._observation.stateReady.connect(
+                self._accept_observation, Qt.ConnectionType.QueuedConnection,
+            )
+            self._observation.statusChanged.connect(self.stateChanged)
+            self._observation.start(self._context, observe=route_active)
+
+    @Slot(int, object)
+    def _accept_observation(self, generation: int, state: DiagnosticTasksViewState) -> None:
+        if self._observation is not None and self._observation.is_current(generation):
+            self._accept_state(self._mount_generation.value, state)
+
+    def _observation_status(self) -> str:
+        observation = self._observation
+        if observation is None:
+            return ""
+        if observation.failed:
+            return "实验室任务观察暂不可用；可重新进入页面重试。"
+        if observation.pending:
+            return "正在读取实验室任务资源；后台计算继续。"
+        return ""
 
     def _queue_state(self, state: DiagnosticTasksViewState) -> None:
         if not self._closed and self._route_active:
@@ -3162,7 +3429,9 @@ class DiagnosticTasksQtAdapter(QObject):
     ) -> None:
         if self._closed or mount_generation != self._mount_generation.value:
             return
-        if state.context != self._context or state.revision <= self._state.revision:
+        if state.context != self._context or (
+            self._state is not None and state.revision <= self._state.revision
+        ):
             return
         self._refresh_setup_selection_sources(
             diagnostic_generation=state.source.generation.value,
@@ -3175,14 +3444,25 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def presentationState(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "failed" if self._observation is not None and self._observation.failed else "loading"
         return str(self._state.presentation.value)
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def freshness(self) -> str:
+        if self._state is None:
+            return "unknown"
+        if self._observation_status() and self._state.last_reliable_inventory is not None:
+            return "stale"
         return str(self._state.freshness.value)
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def statusText(self) -> str:  # noqa: N802
+        observation_status = self._observation_status()
+        if observation_status:
+            return observation_status
+        if self._state is None:
+            return self._observation_status() or "尚未获得实验室任务资源观察。"
         error = self._state.error
         details = (
             f"{self.freshness} · {self.presentationState} · "
@@ -3200,6 +3480,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def stateTitle(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         presentation_state = str(self._state.presentation.value)
         return {
             "loading": "Loading authoritative inputs",
@@ -3212,10 +3494,14 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def revisionText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         return f"r{self._state.revision}"
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def sourceText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         return (
             f"{self._state.source.identity} · "
             f"g{self._state.source.generation.value}"
@@ -3223,6 +3509,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def strategyCatalogText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         inventory = self._state.last_reliable_inventory
         if inventory is None or not inventory.strategies:
             return "No authoritative Strategy Under Test is available."
@@ -3245,6 +3533,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def recipeCatalogText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         inventory = self._state.last_reliable_inventory
         if inventory is None or not inventory.approved_recipes:
             return "No approved Scenario Recipe version is available."
@@ -3259,6 +3549,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def marketScenarioCatalogText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         inventory = self._state.last_reliable_inventory
         if inventory is None or not inventory.market_scenarios:
             return "No materialized Market Scenario is available."
@@ -3314,10 +3606,14 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def reproductionManifestStatus(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         return str(self._state.reproduction_manifest_availability.value)
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def blockingReasonsText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         if not self._state.blocking_reasons:
             return "No blocking reason."
         return "\n".join(
@@ -3327,6 +3623,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canCreate(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return bool(
             self._state.capabilities.can_create
             and (
@@ -3337,6 +3635,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canRevise(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return bool(
             self._state.capabilities.can_revise
             and (
@@ -3379,6 +3679,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canValidate(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return bool(
             self._state.capabilities.can_validate
             and self._current_setup_matches_task()
@@ -3386,6 +3688,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canApprove(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return bool(
             self._state.capabilities.can_approve
             and self._current_setup_matches_task()
@@ -3393,6 +3697,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canStartCampaign(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return bool(
             self._state.capabilities.can_start_campaign
             and self._current_setup_matches_task()
@@ -3400,18 +3706,26 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canPauseTask(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return bool(self._state.capabilities.can_pause)
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canResumeTask(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return bool(self._state.capabilities.can_resume)
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canCancelTask(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return bool(self._state.capabilities.can_cancel)
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canPauseCampaign(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         task = self._state.task
         return bool(
             task is not None
@@ -3422,6 +3736,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canResumeCampaign(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         task = self._state.task
         return bool(
             task is not None
@@ -3432,6 +3748,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canCancelCampaign(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         task = self._state.task
         return bool(
             task is not None
@@ -3447,6 +3765,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canPauseCampaignNode(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         task = self._state.task
         node = self._actionable_campaign_node()
         return bool(
@@ -3462,6 +3782,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canResumeCampaignNode(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         task = self._state.task
         node = self._actionable_campaign_node()
         return bool(
@@ -3487,6 +3809,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(bool, notify=stateChanged)  # type: ignore[arg-type]
     def canRetryFailedCampaignNode(self) -> bool:  # noqa: N802
+        if self._state is None:
+            return False
         return bool(
             self._state.capabilities.can_retry_failed_node
             and self._retryable_campaign_node() is not None
@@ -3494,6 +3818,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def taskStatusText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         task = self._state.task
         if task is None:
             return "No durable Diagnostic Task has been created."
@@ -3506,6 +3832,8 @@ class DiagnosticTasksQtAdapter(QObject):
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
     def researchTaskResources(self) -> list[dict[str, str]]:  # noqa: N802
         """Read-only presentation of the explicitly selected legacy task."""
+        if self._state is None:
+            return []
         task = self._state.task
         if task is None:
             return []
@@ -3526,6 +3854,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def taskHandleText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         task = self._state.task
         if task is None or not task.task_handles:
             return "Task progress · no persistent TaskHandle is available."
@@ -3550,6 +3880,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def validationStatusText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         task = self._state.task
         if task is None:
             return "No Diagnostic Task revision is available for validation."
@@ -3574,6 +3906,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def approvalStatusText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         task = self._state.task
         if task is None or task.approval is None:
             return "No exact-revision approval is active."
@@ -3600,6 +3934,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def evidenceHandoffText(self) -> str:
+        if self._state is None:
+            return "Unavailable"
         task = self._state.task
         if task is None or task.handoff.campaign_id is None:
             return "No Evidence and Findings handoff is available."
@@ -3635,6 +3971,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def campaignLifecycleText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "Unavailable"
         task = self._state.task
         if task is None or task.handoff.campaign_id is None:
             return "No Formal Diagnostic Campaign lifecycle is available."
@@ -3726,6 +4064,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def accessibilitySummaryText(self) -> str:
+        if self._state is None:
+            return self._observation_status() or "尚未获得实验室任务资源观察。"
         error = self._state.error
         manifest_id = self._state.reproduction_manifest_id
         return ". ".join(
@@ -3766,6 +4106,8 @@ class DiagnosticTasksQtAdapter(QObject):
         return self._build_accessibility_announcement_text()
 
     def _build_accessibility_announcement_text(self) -> str:
+        if self._state is None:
+            return self._observation_status() or "尚未获得实验室任务资源观察。"
         task = self._state.task
         error = self._state.error
         lifecycle = (
@@ -3816,6 +4158,8 @@ class DiagnosticTasksQtAdapter(QObject):
         )
 
     def _accessibility_announcement_key(self) -> tuple[object, ...]:
+        if self._state is None:
+            return ("unobserved", self._observation_status())
         task = self._state.task
         error = self._state.error
         latest_handle = (
@@ -3929,6 +4273,10 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def reviseTask(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         task = self._state.task
         setup = self._current_setup_selection()
         configuration = self._configuration_from_inventory(
@@ -3972,6 +4320,10 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def validateTask(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         task = self._state.task
         if task is None or not self.canValidate:
             self._command_status = (
@@ -4009,6 +4361,10 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot(str)
     def approveTask(self, actor_identity: str) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         task = self._state.task
         actor = actor_identity.strip()
         if task is None or not self.canApprove or not actor:
@@ -4073,6 +4429,10 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def startCampaign(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         task = self._state.task
         approval = None if task is None else task.approval
         if (
@@ -4121,6 +4481,10 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def pauseDiagnosticTaskTarget(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         task = self._state.task
         if task is None or not self.canPauseTask:
             self._lifecycle_unavailable("Task pause")
@@ -4143,6 +4507,10 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def resumeDiagnosticTaskTarget(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         task = self._state.task
         if task is None or not self.canResumeTask:
             self._lifecycle_unavailable("Task resume")
@@ -4165,6 +4533,10 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def cancelDiagnosticTaskTarget(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         task = self._state.task
         if task is None or not self.canCancelTask:
             self._lifecycle_unavailable("Task cancel")
@@ -4187,6 +4559,10 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def pauseFormalDiagnosticCampaignTarget(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         task = self._state.task
         if (
             task is None
@@ -4216,6 +4592,10 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def resumeFormalDiagnosticCampaignTarget(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         task = self._state.task
         if (
             task is None
@@ -4245,6 +4625,10 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def cancelFormalDiagnosticCampaignTarget(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         task = self._state.task
         if (
             task is None
@@ -4340,6 +4724,10 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def retryFailedCampaignNode(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         task = self._state.task
         node = self._retryable_campaign_node()
         attempt = (
@@ -4422,6 +4810,8 @@ class DiagnosticTasksQtAdapter(QObject):
     def _actionable_campaign_node(
         self,
     ) -> DiagnosticCampaignNodeHandoff | None:
+        if self._state is None:
+            return None
         task = self._state.task
         if task is None:
             return None
@@ -4442,6 +4832,8 @@ class DiagnosticTasksQtAdapter(QObject):
     def _retryable_campaign_node(
         self,
     ) -> DiagnosticCampaignNodeHandoff | None:
+        if self._state is None:
+            return None
         task = self._state.task
         if task is None:
             return None
@@ -4462,6 +4854,8 @@ class DiagnosticTasksQtAdapter(QObject):
     def _retry_history_campaign_node(
         self,
     ) -> DiagnosticCampaignNodeHandoff | None:
+        if self._state is None:
+            return None
         retryable = self._retryable_campaign_node()
         if retryable is not None:
             return retryable
@@ -4479,6 +4873,8 @@ class DiagnosticTasksQtAdapter(QObject):
         )
 
     def monitoring_context(self) -> RunMonitoringContext | None:
+        if self._state is None:
+            return None
         task = self._state.task
         if task is None:
             return None
@@ -4513,6 +4909,8 @@ class DiagnosticTasksQtAdapter(QObject):
 
     def recovery_task_id(self) -> DiagnosticTaskId | None:
         """Return only the selected durable task identity, never its config."""
+        if self._state is None:
+            return None
 
         task = self._state.task
         return self._context.task_id if task is None else task.task_id
@@ -4525,6 +4923,8 @@ class DiagnosticTasksQtAdapter(QObject):
         rescan the persisted Diagnostic Tasks inventory while this route is
         inactive.
         """
+        if self._state is None:
+            return None
 
         task = self._state.task
         if task is None:
@@ -4559,6 +4959,8 @@ class DiagnosticTasksQtAdapter(QObject):
         self,
     ) -> tuple[ApprovedScenarioRecipeVersionId, ...]:
         """Return the recipes bound to the authoritative Diagnostic Task."""
+        if self._state is None:
+            return ()
 
         task = self._state.task
         if task is None:
@@ -4575,6 +4977,8 @@ class DiagnosticTasksQtAdapter(QObject):
         return _journey_state_unavailable(self._state)
 
     def evidence_context(self) -> EvidenceAndFindingsContext | None:
+        if self._state is None:
+            return None
         task = self._state.task
         if task is None or not task.handoff.ready_for_evidence_and_findings:
             return None
@@ -4672,6 +5076,8 @@ class DiagnosticTasksQtAdapter(QObject):
         *,
         include_all_cases: bool,
     ) -> DiagnosticTaskConfiguration | None:
+        if self._state is None:
+            return None
         if self._setup_selection_provider is not None:
             setup = self._current_setup_selection()
             return None if setup is None else setup.configuration
@@ -4783,6 +5189,8 @@ class DiagnosticTasksQtAdapter(QObject):
             self._refreshing_setup_selection = False
 
     def _current_setup_matches_task(self) -> bool:
+        if self._state is None:
+            return False
         if self._setup_selection_provider is None:
             return True
         setup = self._current_setup_selection()
@@ -4805,6 +5213,10 @@ class DiagnosticTasksQtAdapter(QObject):
         )
 
     def upstreamSelectionChanged(self) -> None:  # noqa: N802
+        if self._state is None:
+            self._command_status = "实验室任务资源尚未就绪；未执行操作。"
+            self.stateChanged.emit()
+            return
         if self._closed or self._refreshing_setup_selection:
             return
         selection = self._observe_current_setup_selection()
@@ -4823,6 +5235,11 @@ class DiagnosticTasksQtAdapter(QObject):
 
     @Slot()
     def refresh(self) -> None:
+        if self._closed:
+            return
+        if self._observation is not None:
+            self._observation.start(self._context, observe=self._route_active)
+            return
         self._accept_state(
             self._mount_generation.value,
             self._feature.snapshot(self._context),
@@ -4833,6 +5250,12 @@ class DiagnosticTasksQtAdapter(QObject):
             return
         self._route_active = active
         self._mount_generation = _next_mount_generation()
+        if self._observation is not None:
+            if active:
+                self._observation.start(self._context, observe=True)
+            else:
+                self._observation.stop()
+            return
         subscription = self._subscription
         self._subscription = None
         if subscription is not None:
@@ -4856,6 +5279,8 @@ class DiagnosticTasksQtAdapter(QObject):
         if self._closed:
             return
         self._closed = True
+        if self._observation is not None:
+            self._observation.close()
         self._route_active = False
         self._mount_generation = _next_mount_generation()
         subscription = self._subscription
@@ -7908,6 +8333,7 @@ class JourneyWorkspaceHost(QQuickWidget):
                 strategy_library_feature,
                 context=strategy_library_context,
                 bookmark_sink=strategy_library_bookmark_sink,
+                nonblocking_observation=research_shell,
                 route_active=(
                     not research_shell
                     and initial_route_identity
@@ -7924,6 +8350,7 @@ class JourneyWorkspaceHost(QQuickWidget):
         )
         if (
             self._strategy_library is not None
+            and not research_shell
             and initial_route_identity is JourneyWorkspaceRoute.SCENARIO_LAB
         ):
             self._strategy_library.refresh()
@@ -7984,29 +8411,30 @@ class JourneyWorkspaceHost(QQuickWidget):
                 context=diagnostic_tasks_context,
                 setup_selection_provider=(
                     self._current_diagnostic_setup_selection
-                    if self._strategy_library is not None
+                    if not research_shell and self._strategy_library is not None
                     and self._scenario_lab is not None
                     else None
                 ),
                 setup_selection_refresh=(
                     self._refresh_diagnostic_setup_sources
-                    if self._strategy_library is not None
+                    if not research_shell and self._strategy_library is not None
                     and self._scenario_lab is not None
                     else None
                 ),
                 setup_selection_sources_current=(
                     self._diagnostic_setup_sources_current
-                    if self._strategy_library is not None
+                    if not research_shell and self._strategy_library is not None
                     and self._scenario_lab is not None
                     else None
                 ),
                 setup_selection_coordinator=(
-                    diagnostic_setup_selection_coordinator
+                    None if research_shell else diagnostic_setup_selection_coordinator
                 ),
                 route_active=(
                     initial_route_identity
                     is JourneyWorkspaceRoute.DIAGNOSTIC_TASKS
                 ),
+                nonblocking_observation=research_shell,
                 parent=self,
             )
             if diagnostic_tasks_feature is not None
