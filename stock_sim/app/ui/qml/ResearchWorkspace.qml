@@ -148,6 +148,14 @@ Rectangle {
                     ? (scenarioLab === null ? "场景库资源不可用" : scenarioLab.statusMessage)
                     : workspace.activeRoute === "evidence_and_findings"
                     ? (evidenceAndFindings === null ? "实验档案资源不可用" : evidenceAndFindings.statusText)
+                    : workspace.activeRoute === "run_monitoring"
+                    ? (runMonitoring === null ? "运行详情资源不可用"
+                        : "运行详情 · 旧运行兼容视图\n"
+                        + "Campaign: " + runMonitoring.campaignIdentity
+                        + "\nRun: " + (runMonitoring.runIdentity || "未选择运行")
+                        + "\n" + runMonitoring.statusText
+                        + "\n生命周期: " + runMonitoring.lifecycle
+                        + "\n进度: " + runMonitoring.progressText)
                     : (diagnosticTasks === null ? "实验室资源不可用" : diagnosticTasks.statusText)
                 background: Rectangle { color: tokens.background }
             }

@@ -73,7 +73,84 @@ input; it does not assert a private border property. The 75-case run above used
 that observer correction. This is offscreen painted-QML evidence, not native UIA,
 Narrator or a new formal physical-DPI acceptance claim.
 
+### First native startup follow-up on a07793c
+
+After the initial untimed TDD projections, two dedicated Windows processes loaded
+the actual AppContext/live MainWindow shell with independent settings and data:
+Software PID 273352, **1031.3021 ms**; Direct3D11 PID 278044, **871.8108 ms**.
+Both are over the unchanged 750 ms target. These are source-composed diagnostics,
+not installed-package acceptance. Both exact samples and hashes are recorded in
+`frontend-v21-issue134-startup-source-probe.json`; the scratch probe and raw reports
+are retained. Actual client 1426×786, DPR 1.0, Microsoft YaHei UI, 2 real assets.
+OS file caches were not cleared or controlled; no cold-cache/percentile claim.
+
+The probe captured an intermediate frame whose public query state was ready but
+whose QML list still had zero rows. Only the later rendered two-row projection
+counted as usable. The initial TDD timing gap remains explicit rather than being
+retroactively labelled measured. Native first-frame images were visually inspected.
+
+## Two-axis review and fixes
+
+Both independent review agents reviewed the implementation checkpoint pinned to
+`git diff f354f0328ba33e10f98b8018e886d170c8d72c0d...a07793c07cc6852e877c1b9927cd2461b387c23b`.
+The only commit in that range was a07793c. They subsequently performed read-only
+targeted rechecks of the fixes below. Neither reviewer ran tests or changed files.
+
+### Standards
+
+One P2 documented-standard finding: entering compact layout reparented a focused
+list into a closed drawer, violating ADR-0039's semantic-focus reflow rule. The
+fix captures actual list focus before moving the existing ListView, opens the
+drawer when necessary and restores list focus on widening. The reviewer confirmed
+this finding resolved and found no concrete new hard-standard problem in the fix.
+No additional baseline smell was reported as a concrete behavioral problem.
+
+### Spec
+
+One P2 implementation-error finding: the retained run-monitoring route displayed
+the inactive task adapter's status rather than the subscribed run projection.
+The explicit run branch now reads existing campaign/run identities, status,
+lifecycle and progress, labelled as a legacy-run compatibility view. No Attempt,
+checkpoint, latest-selection or execution semantics were invented. The reviewer
+confirmed this finding resolved with no new specification deviation in the fix.
+The previously recorded unfinished #134 scope below remains unfinished.
+
+Review summary: Standards 1 P2 resolved, no outstanding new finding; Spec 1 P2
+resolved, no outstanding new finding. This is not whole-ticket acceptance.
+
+| Before | After | Why |
+| --- | --- | --- |
+| Shrinking a focused list hid its keyboard target. | The same list remains focused in an opened compact drawer and returns on widening. | Preserve keyboard continuity without duplicating selection or adding motion. |
+| An exact run route showed the task list's stale summary. | It shows its subscribed exact run identity, lifecycle and progress. | Keep the displayed resource consistent with its active observation. |
+
+### Review-fix regression evidence
+
+- `run-route-review-red-valid.xml`: 1 behavior failure for the absent exact run;
+  `run-route-review-green.xml`: 1 passed. The earlier `run-route-review-red.xml`
+  failed in test preparation because the default context had no selected run;
+  it is not counted as a valid behavioral red. The corrected test uses the public
+  host constructor with an exact typed context and observes running → completed.
+- `reflow-focus-review-red.xml`: 2 failures (live/fake); then
+  `reflow-focus-review-green.xml`: 2 passed. A single live QML window changes
+  1426×786 → 960×480 → 1426×786 → 960×480, retains the exact selection, returns
+  focus on Escape and completes the same exact read. Resizing while details hold
+  focus must not open the drawer or steal focus.
+- `research-review-fixes-regression.xml`: **78 passed**, 38.23 seconds: 14 new
+  shell cases, 25 retained Journey Rail cases and 39 exact-inspector cases.
+  These are offscreen software tests, not native UIA or physical-DPI acceptance.
+
+SHA-256 binding for the final review-fix run (local file bytes before commit):
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `research-review-fixes-regression.xml` | `F670CE6AA12B55F8A4B6FAD0A9D5B769BF2D618E8895C3322C4D220BA9AFF16A` |
+| `app/ui/qml/ResearchAssetPage.qml` | `846CF1255B5A4083AF6BA3B2298EF3EBCF2E7599502D80A9672F5E915510772C` |
+| `app/ui/qml/ResearchWorkspace.qml` | `4298BB88AAE8944A89A51EFBABF6F22E7DE9FBF274B6712C187DDA1A7477C4C8` |
+| `tests/frontend/integration/test_research_workspace_shell.py` | `360DA065F682F14A2A675A13121BC6B3AF891CD3FD45FECE91493B50853D5743` |
+
 ## Required next work (not waived or deferred out of #134)
+
+### Remaining implementation and verification
 
 1. Replace the other three pages' status-only surfaces with usable, exact existing
    resource projections and honest capability limitations. Preserve independent
@@ -85,10 +162,10 @@ Narrator or a new formal physical-DPI acceptance claim.
    disposal of page observations without cancellation of application work.
 4. Finish compact/normal/wide layout and evidence-region behavior, resizes with open
    drawers, text 100/200%, UIA name/role/value/state and actual client/DPR records.
-5. Instrument and record both renderer cold-start boundaries and first actual usable
-   projection frames. No 750 ms measurement or PASS exists in this checkpoint;
-   the initial source-level test projections above did not collect timing evidence.
-   Keep that gap explicit. Formal entry/package integration must not use skeletons,
+5. Extend the recorded source probes to the finished shell and formal package's
+   dual-renderer cold-start and first actual usable frame gates. The two source
+   samples above exceed 750 ms, and the initial untimed TDD projections remain
+   a recorded gap. Formal entry/package integration must not use skeletons,
    warmed state, a smaller boundary, or inherited Wave 4 exemptions to pass.
 6. Wire the finished shell into normal and packaged entries with explicit legacy
    compatibility entry; preserve old bookmark generations and exact identities.

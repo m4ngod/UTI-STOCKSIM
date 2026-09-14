@@ -1,0 +1,58 @@
+{
+  "schema": "frontend-v21-source-startup-progress/1.0",
+  "source_commit": "a07793c07cc6852e877c1b9927cd2461b387c23b",
+  "specification_sha256": "A4D64B033E55DCD5203B6204AA01932501EEBD06AE55BAB45EDF2FCDF48C839E",
+  "scope": "Source-composed MainWindow with research_shell=true; not normal/package entry and not formal acceptance",
+  "input": {
+    "mode": "live",
+    "assets": 2,
+    "source_revision": "8f06a93633f2900a113683aab275512a7bfccff53b8b82a9f8a76ab5c72f1e03",
+    "settings": "New per-process independent directory",
+    "qml_disk_cache": "disabled",
+    "os_cache_state": "not cleared or controlled",
+    "logical_client": [1426, 786],
+    "dpr": 1.0,
+    "platform": "Windows",
+    "font_family": "Microsoft YaHei UI"
+  },
+  "protocol": {
+    "clock": "perf_counter_ns",
+    "origin": "runtime_entry_before_qapplication",
+    "endpoint": "afterRendering of a synchronized visible frame with both real catalog rows and fresh ready public query state",
+    "threshold_ms": 750.0,
+    "formal_gate": "NOT_EVALUATED_SOURCE_PROBE_ONLY",
+    "source_threshold_result": "BOTH_OVER_TARGET",
+    "probe_sha256": "3B5D2A1930FE51C754A0F39779882B614EC0F021BD30E2D1C29D129A16B32F1B"
+  },
+  "observations": [
+    {
+      "renderer": "Software",
+      "pid": 273352,
+      "runtime_entry_ns": 762917622925600,
+      "first_visible_frame_ns": 762918559287000,
+      "usable_frame_ns": 762918654227700,
+      "usable_state_ms": 1031.3021,
+      "script_to_usable_ms": 1698.2062,
+      "raw_report": "startup-software-1/report.json",
+      "raw_report_sha256": "8C8E4F194C32E777A09D631D03387F844EFE3098DCFAE275A557E9620DD4B372"
+    },
+    {
+      "renderer": "Direct3D11",
+      "pid": 278044,
+      "runtime_entry_ns": 762950023904700,
+      "first_visible_frame_ns": 762950782429000,
+      "usable_frame_ns": 762950895715500,
+      "usable_state_ms": 871.8108,
+      "script_to_usable_ms": 1538.8268,
+      "raw_report": "startup-d3d11-1/report.json",
+      "raw_report_sha256": "6CE7929156B0F2687465392C5D5284FFB11AC5D1441C401B0D6A3D8252CF00C4"
+    }
+  ],
+  "limitations": [
+    "Only one retained new-process sample per renderer; no percentile claim",
+    "Initial offscreen TDD projections were not timed; these are the first dedicated native timing probes",
+    "Other three pages remain status-only at this checkpoint",
+    "No installed-package, cold-cache, resource-budget, native UIA, Narrator or physical-DPI-matrix acceptance",
+    "A read-ready state with zero rendered rows was explicitly excluded from usable state"
+  ]
+}

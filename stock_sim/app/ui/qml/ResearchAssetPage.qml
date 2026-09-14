@@ -13,10 +13,27 @@ Item {
     readonly property bool compact: width < listMinimumWidth + detailMinimumWidth + tokens.spaceMd
     FontMetrics { id: metrics; font.pixelSize: tokens.bodySize }
 
-    onCompactChanged: {
-        if (!compact && listDrawer.opened)
+    function reflowList() {
+        if (!assetList || !listDrawer)
+            return
+        // Move the existing view only after capturing its focus. A parent binding
+        // can otherwise hide it in a closed drawer before focus can be restored.
+        const restoreList = assetList.activeFocus
+        assetList.parent = compact ? listDrawer.contentItem : listContainer
+        if (compact && restoreList) {
+            listDrawer.open()
+        } else if (!compact) {
             listDrawer.close()
+            if (restoreList) {
+                Qt.callLater(function() {
+                    if (page.visible && !page.compact)
+                        assetList.forceActiveFocus()
+                })
+            }
+        }
     }
+    onCompactChanged: reflowList()
+    Component.onCompleted: reflowList()
     onVisibleChanged: {
         if (!visible)
             listDrawer.close()
@@ -98,7 +115,7 @@ Item {
             spacing: tokens.spaceMd
             Item {
                 id: listContainer
-                visible: !page.compact
+                visible: assetList.parent === listContainer
                 Layout.preferredWidth: page.listMinimumWidth
                 Layout.fillHeight: true
             }
@@ -142,7 +159,7 @@ Item {
     ListView {
         id: assetList
         objectName: "researchAssetList"
-        parent: page.compact ? listDrawer.contentItem : listContainer
+        parent: listContainer
         anchors.fill: parent
         anchors.margins: page.compact ? tokens.spaceMd : 0
         model: adapter.assets
