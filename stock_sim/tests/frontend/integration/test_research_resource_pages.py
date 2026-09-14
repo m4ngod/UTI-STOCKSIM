@@ -807,6 +807,69 @@ def test_archive_reads_sealed_file_backed_evidence_through_app_context(tmp_path,
 
 
 @pytest.mark.parametrize("resource_context", ["live"], indirect=True)
+@pytest.mark.parametrize("scale", [1.0, 2.0])
+def test_open_resource_drawer_reflows_without_losing_exact_selection_or_focus(
+    resource_context, scale, record_property,
+):
+    app, context = resource_context
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        scenario_lab_feature=context.scenario_lab_feature,
+        scenario_lab_context=context.scenario_lab_context,
+        initial_route="scenario_lab", research_shell=True,
+        accessibility_preferences=AccessibilityPreferences(text_scale=scale, reduced_motion=True),
+    )
+    host.resize(2600, 1400)
+    host.show()
+    try:
+        root = host.rootObject()
+        catalog = root.findChild(QQuickItem, "researchScenarioPageList")
+        until(app, lambda: catalog.property("count") > 0)
+        expected = context.scenario_lab_feature.snapshot(context.scenario_lab_context).market_scenarios[0]
+        catalog.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        details = root.findChild(QQuickItem, "researchScenarioPageDetails")
+        original_text = details.property("text")
+        assert expected.scenario_id.value in original_text
+        selected_index = catalog.property("currentIndex")
+        drawer = root.findChild(QObject, "researchScenarioPageDrawer")
+        toggle = root.findChild(QQuickItem, "researchScenarioPageListButton")
+        catalog.forceActiveFocus()
+
+        for step, (width, height) in enumerate(((960, 480), (960, 540), (2600, 1400), (960, 480))):
+            host.resize(width, height)
+            until(app, lambda: bool(drawer.property("opened")) == (width == 960)
+                  and catalog.hasActiveFocus() and catalog.isVisible())
+            assert catalog.property("currentIndex") == selected_index
+            assert expected.scenario_id.value in details.property("text")
+            bounds = catalog.mapRectToScene(catalog.boundingRect())
+            assert bounds.width() > 0 and 0 <= bounds.left() < host.width()
+            assert bounds.height() > 0 and 0 <= bounds.top() < host.height()
+            assert bounds.right() <= host.width() and bounds.bottom() <= host.height()
+            record_property(f"client_step_{step}", f"{host.width()}x{host.height()}")
+
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Escape)
+        until(app, lambda: not drawer.property("opened") and toggle.hasActiveFocus())
+        assert toggle.isVisible()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+        until(app, lambda: drawer.property("opened") and catalog.hasActiveFocus())
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        until(app, lambda: details.hasActiveFocus() and not drawer.property("opened"))
+        assert expected.scenario_id.value in details.property("text")
+        assert context.scenario_lab_feature.snapshot(context.scenario_lab_context).market_scenarios[0] == expected
+        record_property("dpr", host.devicePixelRatioF())
+        record_property("text_scale", scale)
+        record_property("source_revision", context.scenario_lab_feature.snapshot(context.scenario_lab_context).source_revision.value)
+    finally:
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+@pytest.mark.parametrize("resource_context", ["live"], indirect=True)
 @pytest.mark.parametrize("size,scale", [((960, 480), 2.0), ((960, 540), 1.0), ((2600, 1400), 1.0)])
 def test_resource_layout_keeps_exact_details_and_accessible_controls_reachable(
     resource_context, size, scale, record_property,
