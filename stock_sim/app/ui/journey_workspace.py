@@ -5682,12 +5682,21 @@ class EvidenceAndFindingsQtAdapter(QObject):
         return self._state.last_reliable_data is not None
 
     @Property("QVariantList", notify=stateChanged)  # type: ignore[arg-type]
-    def researchEvidenceResources(self) -> list[dict[str, str]]:  # noqa: N802
+    def researchEvidenceResources(self) -> list[dict[str, object]]:  # noqa: N802
         """Project preserved records without recomputing or aggregating evidence."""
         data = self._state.last_reliable_data
         if data is None:
             return []
-        rows: list[dict[str, str]] = []
+        resource_keys = {
+            (kind, item.identity.value): repr((
+                data.evidence_package_id.value, owner.identity.value, kind, item.identity.value,
+            ))
+            for owner in data.candidates
+            for kind, items in (("record", owner.evidence), ("comparison", owner.comparisons),
+                                ("finding", owner.findings))
+            for item in items
+        }
+        rows: list[dict[str, object]] = []
         for candidate in data.candidates:
             provenance = candidate.provenance
             source = "\n".join((
@@ -5699,8 +5708,7 @@ class EvidenceAndFindingsQtAdapter(QObject):
             ))
             for record in candidate.evidence:
                 rows.append({
-                    "key": repr((data.evidence_package_id.value, candidate.identity.value,
-                                 "record", record.identity.value)),
+                    "key": resource_keys["record", record.identity.value],
                     "label": f"证据 · {record.label}\n{record.identity.value}",
                     "details": "\n".join((
                         "旧证据兼容 · 原始观察",
@@ -5709,6 +5717,58 @@ class EvidenceAndFindingsQtAdapter(QObject):
                         f"可用性: {record.availability.value}",
                         f"覆盖层: {record.coverage.value} · 维度: {record.dimension.value}",
                         record.interpretation,
+                        "\n精确来源\n" + source,
+                    )),
+                })
+            for comparison in candidate.comparisons:
+                rows.append({
+                    "key": resource_keys["comparison", comparison.identity.value],
+                    "label": f"比较 · {comparison.label}\n{comparison.identity.value}",
+                    "links": [
+                        {"key": resource_keys["record", identity.value],
+                         "label": f"{label}: {identity.value}"}
+                        for label, identity in (
+                            ("查看参考证据", comparison.reference_evidence_id),
+                            ("查看观察证据", comparison.observed_evidence_id),
+                        )
+                    ],
+                    "details": "\n".join((
+                        "旧证据兼容 · 原始比较",
+                        f"比较: {comparison.identity.value}",
+                        f"参考证据: {comparison.reference_evidence_id.value}",
+                        f"观察证据: {comparison.observed_evidence_id.value}",
+                        comparison.interpretation,
+                        "仅展示已保存的比较关系，不重算结果。",
+                        "\n精确来源\n" + source,
+                    )),
+                })
+            for finding in candidate.findings:
+                rows.append({
+                    "key": resource_keys["finding", finding.identity.value],
+                    "label": f"发现 · {finding.title}\n{finding.identity.value}",
+                    "links": [
+                        {"key": resource_keys[kind, identity.value],
+                         "label": f"{label}: {identity.value}"}
+                        for kind, label, identities in (
+                            ("comparison", "查看关联比较", finding.comparison_ids),
+                            ("record", "查看关联证据", finding.evidence_ids),
+                        )
+                        for identity in identities
+                    ],
+                    "details": "\n".join((
+                        "旧证据兼容 · 原始发现",
+                        f"发现: {finding.identity.value} · {finding.title}",
+                        f"原结论状态: {finding.disposition.value}",
+                        finding.comparison_summary,
+                        "失败原因: " + (finding.failure_reason or "未记录"),
+                        "关联比较: " + ", ".join(item.value for item in finding.comparison_ids),
+                        "关联证据: " + ", ".join(item.value for item in finding.evidence_ids),
+                        "原敏感性断点:\n" + ("\n".join(
+                            f"{point.identity.value} · {point.assumption_name} = {point.threshold}\n"
+                            f"{point.outcome}\n证据: " + ", ".join(item.value for item in point.evidence_ids)
+                            for point in finding.sensitivity_breakpoints
+                        ) or "未记录"),
+                        "只展示原发现，不提升证据完整性或重新评定结论。",
                         "\n精确来源\n" + source,
                     )),
                 })

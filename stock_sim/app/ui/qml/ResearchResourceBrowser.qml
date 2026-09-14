@@ -10,6 +10,8 @@ Item {
     required property string statusText
     required property string limitationText
     property var selectedEntry: null
+    property var parentKeys: []
+    property string navigationError: ""
     readonly property real listMinimumWidth: Math.max(300,
         metrics.advanceWidth("对象名称、精确版本与兼容状态") + tokens.spaceMd * 2)
     readonly property real detailMinimumWidth: Math.max(640,
@@ -25,10 +27,40 @@ Item {
     function choose(index) {
         if (index < 0 || index >= entries.length)
             return
+        parentKeys = []
+        navigationError = ""
         selectedEntry = entries[index]
         if (compact)
             listDrawer.close()
         details.forceActiveFocus()
+    }
+    function openRelated(key, label) {
+        if (selectedEntry !== null)
+            parentKeys = parentKeys.concat([selectedEntry.key])
+        resolveRelated(key, label)
+    }
+    function resolveRelated(key, label) {
+        const exact = entries.find(function(entry) { return entry.key === key })
+        selectedEntry = exact === undefined ? null : exact
+        navigationError = exact === undefined ? "关联资源不可用：" + label + "。未选择其他对象。" : ""
+        detailScroll.contentItem.contentY = 0
+        details.forceActiveFocus()
+    }
+    function returnToParent() {
+        if (!parentKeys.length)
+            return
+        const key = parentKeys[parentKeys.length - 1]
+        parentKeys = parentKeys.slice(0, -1)
+        resolveRelated(key, "原上级引用")
+    }
+    function revealControl(control) {
+        const top = control.mapToItem(detailContent, 0, 0).y
+        const current = detailScroll.contentItem.contentY
+        const bottom = top + control.height
+        if (top < current)
+            detailScroll.contentItem.contentY = top
+        else if (bottom > current + detailScroll.availableHeight)
+            detailScroll.contentItem.contentY = Math.max(0, bottom - detailScroll.availableHeight)
     }
     function reflowList() {
         if (!catalog || !listDrawer)
@@ -61,10 +93,21 @@ Item {
     onEntriesChanged: {
         if (selectedEntry === null)
             return
+        let relatedHadFocus = false
+        for (let index = 0; index < relatedLinks.count; ++index) {
+            const link = relatedLinks.itemAt(index)
+            relatedHadFocus = relatedHadFocus || (link !== null && link.activeFocus)
+        }
         const exact = entries.find(function(entry) { return entry.key === selectedEntry.key })
         // The typed Feature owns last-reliable retention during transient loss.
         // Do not keep a second copy after that authoritative projection clears it.
         selectedEntry = exact === undefined ? null : exact
+        if (selectedEntry === null && relatedHadFocus) {
+            if (compact)
+                listButton.forceActiveFocus()
+            else
+                catalog.forceActiveFocus()
+        }
     }
 
     Drawer {
@@ -89,6 +132,14 @@ Item {
         spacing: tokens.spaceSm
         RowLayout {
             Layout.fillWidth: true
+            DiagnosticCommandButton {
+                objectName: browser.objectName + "Back"
+                visible: browser.parentKeys.length > 0
+                tokens: browser.tokens
+                text: "返回上级"
+                accessibleDescription: "返回下钻前的精确对象；不启动或修改实验。"
+                onInvoked: browser.returnToParent()
+            }
             Text {
                 Layout.fillWidth: true
                 text: browser.title
@@ -126,28 +177,70 @@ Item {
                 Layout.fillHeight: true
             }
             ScrollView {
+                id: detailScroll
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 contentWidth: availableWidth
-                TextArea {
-                    id: details
-                    objectName: browser.objectName + "Details"
-                    readOnly: true
-                    selectByMouse: true
-                    wrapMode: TextEdit.WrapAnywhere
-                    color: tokens.textPrimary
-                    font.pixelSize: tokens.bodySize
-                    Accessible.name: browser.title + "精确资源详情和限制"
-                    Accessible.readOnly: true
-                    text: (browser.selectedEntry === null
-                        ? (browser.entries.length ? "从对象列表选择精确资源。" : "当前没有可读取的资源。")
-                        : browser.selectedEntry.details
-                            + (!browser.wide && browser.selectedEvidence.length ? "\n\n精确来源\n" + browser.selectedEvidence : ""))
-                        + "\n\n" + browser.limitationText
-                    background: Rectangle {
-                        color: tokens.background
-                        border.width: details.activeFocus ? tokens.focusWidth : 0
-                        border.color: tokens.focus
+                contentHeight: detailContent.implicitHeight
+                Column {
+                    id: detailContent
+                    width: detailScroll.availableWidth
+                    spacing: tokens.spaceSm
+                    TextArea {
+                        id: details
+                        width: parent.width
+                        objectName: browser.objectName + "Details"
+                        readOnly: true
+                        selectByMouse: true
+                        wrapMode: TextEdit.WrapAnywhere
+                        color: tokens.textPrimary
+                        font.pixelSize: tokens.bodySize
+                        Accessible.name: browser.title + "精确资源详情和限制"
+                        Accessible.readOnly: true
+                        text: (browser.navigationError.length ? browser.navigationError : browser.selectedEntry === null
+                            ? (browser.entries.length ? "从对象列表选择精确资源。" : "当前没有可读取的资源。")
+                            : browser.selectedEntry.details
+                                + (!browser.wide && browser.selectedEvidence.length ? "\n\n精确来源\n" + browser.selectedEvidence : ""))
+                            + "\n\n" + browser.limitationText
+                        background: Rectangle {
+                            color: tokens.background
+                            border.width: details.activeFocus ? tokens.focusWidth : 0
+                            border.color: tokens.focus
+                        }
+                    }
+                    Repeater {
+                        id: relatedLinks
+                        model: browser.selectedEntry === null ? [] : (browser.selectedEntry.links || [])
+                        Button {
+                            id: linkControl
+                            required property var modelData
+                            required property int index
+                            objectName: browser.objectName + "Link" + index
+                            width: detailContent.width
+                            text: modelData.label
+                            font.pixelSize: tokens.bodySize
+                            implicitHeight: Math.max(tokens.controlHeight, contentItem.implicitHeight + tokens.spaceMd)
+                            activeFocusOnTab: true
+                            Accessible.name: text
+                            Accessible.description: "读取同一精确来源中的关联对象，可返回上级；不会启动计算。"
+                            Keys.onReturnPressed: clicked()
+                            Keys.onEnterPressed: clicked()
+                            onClicked: browser.openRelated(modelData.key, modelData.label)
+                            onActiveFocusChanged: { if (activeFocus) browser.revealControl(linkControl) }
+                            onYChanged: { if (activeFocus) browser.revealControl(linkControl) }
+                            onHeightChanged: { if (activeFocus) browser.revealControl(linkControl) }
+                            contentItem: Text {
+                                text: parent.text
+                                font: parent.font
+                                wrapMode: Text.WrapAnywhere
+                                color: tokens.textPrimary
+                            }
+                            background: Rectangle {
+                                color: tokens.surfaceRaised
+                                border.color: parent.activeFocus ? tokens.focus : tokens.border
+                                border.width: parent.activeFocus ? tokens.focusWidth : 1
+                            }
+                        }
                     }
                 }
             }

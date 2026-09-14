@@ -52,6 +52,16 @@ def until(app, predicate):
     raise AssertionError("The public resource projection did not become available")
 
 
+def visible_item(root, name):
+    """QML delegates may have visual parents outside QObject ownership traversal."""
+    if root.objectName() == name:
+        return root
+    for child in root.childItems():
+        if found := visible_item(child, name):
+            return found
+    return None
+
+
 @pytest.mark.parametrize("resource_context", ["fake"], indirect=True)
 def test_focused_wide_source_reflows_into_visible_details(resource_context):
     app, context = resource_context
@@ -355,6 +365,46 @@ def test_archive_clears_old_details_when_the_exact_reference_becomes_invalid(res
 
 
 @pytest.mark.parametrize("resource_context", ["fake"], indirect=True)
+def test_archive_reads_preserved_comparison_without_recalculating_results(resource_context):
+    app, context = resource_context
+    selection = exact_evidence_context()
+    feature = context.evidence_and_findings_feature
+    ready = feature.advance_to_completed(selection).last_reliable_data
+    candidate = ready.candidates[0]
+    comparison = candidate.comparisons[0]
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        evidence_feature=feature, evidence_context=selection,
+        initial_route="evidence_and_findings", research_shell=True,
+    )
+    host.resize(1426, 786)
+    host.show()
+    try:
+        catalog = host.rootObject().findChild(QQuickItem, "researchArchivePageList")
+        until(app, lambda: catalog.property("count") > 0)
+        catalog.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+        for _ in candidate.evidence:
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        details = host.rootObject().findChild(QQuickItem, "researchArchivePageDetails")
+        text = details.property("text")
+        assert comparison.identity.value in text
+        assert comparison.reference_evidence_id.value in text
+        assert comparison.observed_evidence_id.value in text
+        assert comparison.interpretation in text
+        assert ready.evidence_package_id.value in text
+        assert "旧证据兼容 · 原始比较" in text
+        assert feature.snapshot(selection).last_reliable_data == ready
+    finally:
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+@pytest.mark.parametrize("resource_context", ["fake"], indirect=True)
 def test_archive_retains_same_identity_during_disconnection_and_updates_after_recovery(resource_context):
     app, context = resource_context
     selection = exact_evidence_context()
@@ -398,7 +448,235 @@ def test_archive_retains_same_identity_during_disconnection_and_updates_after_re
         app.processEvents()
 
 
-def test_archive_reads_sealed_file_backed_evidence_through_app_context(tmp_path, request, monkeypatch):
+@pytest.mark.parametrize("resource_context", ["fake"], indirect=True)
+@pytest.mark.parametrize("size,scale", [((1426, 786), 1.0), ((960, 480), 2.0)])
+@pytest.mark.parametrize("kind", ["comparison", "finding", "cross_candidate"])
+def test_archive_relation_drilldown_returns_to_exact_parent_with_keyboard(
+    resource_context, size, scale, kind, record_property,
+):
+    app, context = resource_context
+    selection = exact_evidence_context()
+    feature = context.evidence_and_findings_feature
+    ready_state = feature.advance_to_completed(selection)
+    ready = ready_state.last_reliable_data
+    candidate = ready.candidates[0]
+    comparison = candidate.comparisons[0]
+    if kind == "cross_candidate":
+        comparison = replace(comparison, reference_evidence_id=ready.candidates[1].evidence[0].identity)
+        candidate = replace(candidate, comparisons=(comparison, *candidate.comparisons[1:]))
+        ready = replace(ready, candidates=(candidate, *ready.candidates[1:]))
+        feature.replay_scripted_state(selection, replace(
+            ready_state, revision=ready_state.revision + 1, last_reliable_data=ready))
+    finding = candidate.findings[0]
+    reference = next(item for owner in ready.candidates for item in owner.evidence
+                     if item.identity == comparison.reference_evidence_id)
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        evidence_feature=feature, evidence_context=selection,
+        initial_route="evidence_and_findings", research_shell=True,
+        accessibility_preferences=AccessibilityPreferences(text_scale=scale, reduced_motion=True),
+    )
+    host.resize(*size)
+    host.show()
+    try:
+        root = host.rootObject()
+        catalog = root.findChild(QQuickItem, "researchArchivePageList")
+        until(app, lambda: catalog.property("count") > 0)
+        if size[0] == 960:
+            root.findChild(QQuickItem, "researchArchivePageListButton").forceActiveFocus()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+        catalog.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+        for _ in candidate.evidence:
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
+        if kind == "finding":
+            for _ in candidate.comparisons:
+                QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        details = root.findChild(QQuickItem, "researchArchivePageDetails")
+        if kind == "finding":
+            assert finding.identity.value in details.property("text")
+            assert finding.disposition.value in details.property("text")
+            assert finding.failure_reason in details.property("text")
+            assert finding.sensitivity_breakpoints[0].threshold in details.property("text")
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Tab)
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        assert comparison.identity.value in details.property("text")
+        app.processEvents()
+        link = visible_item(root, "researchArchivePageLink0")
+        assert link is not None and link.isEnabled()
+        details.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Tab)
+        QTest.qWait(20)
+        assert link.hasActiveFocus()
+        interface = QAccessible.queryAccessibleInterface(link)
+        assert interface is not None and interface.isValid()
+        assert reference.identity.value in interface.text(QAccessible.Text.Name)
+        assert interface.role() == QAccessible.Role.Button
+        assert interface.state().focusable and not interface.state().disabled
+        bounds = link.mapRectToScene(link.boundingRect())
+        assert bounds.top() >= 0 and bounds.bottom() <= host.height()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        assert reference.identity.value in details.property("text")
+        assert f"原值: {reference.value} {reference.unit}" in details.property("text")
+        back = root.findChild(QQuickItem, "researchArchivePageBack")
+        assert back is not None and back.isVisible()
+        back.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+        assert comparison.identity.value in details.property("text")
+        assert details.hasActiveFocus()
+        if kind == "finding":
+            back.forceActiveFocus()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+            assert finding.identity.value in details.property("text")
+            assert details.hasActiveFocus()
+        assert not back.isVisible()
+        assert feature.snapshot(selection).last_reliable_data == ready
+        record_property("logical_client", f"{host.width()}x{host.height()}")
+        record_property("dpr", host.devicePixelRatioF())
+        record_property("text_scale", scale)
+        record_property("evidence_package", ready.evidence_package_id.value)
+        if evidence_dir := os.environ.get("STOCKSIM_QML_EVIDENCE_DIR"):
+            QTest.qWait(30)
+            destination = Path(evidence_dir)
+            destination.mkdir(parents=True, exist_ok=True)
+            assert host.grabFramebuffer().save(str(destination / f"archive-{kind}-{size[0]}x{size[1]}-text{scale}.png"))
+    finally:
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+@pytest.mark.parametrize("resource_context", ["fake"], indirect=True)
+@pytest.mark.parametrize("source_state", ["disconnected", "invalid"])
+@pytest.mark.parametrize("compact", [False, True])
+def test_archive_related_focus_tracks_reliable_source_or_falls_back_on_invalidation(resource_context, source_state, compact):
+    app, context = resource_context
+    selection = exact_evidence_context()
+    feature = context.evidence_and_findings_feature
+    ready_state = feature.advance_to_completed(selection)
+    ready = ready_state.last_reliable_data
+    candidate = ready.candidates[0]
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        evidence_feature=feature, evidence_context=selection,
+        initial_route="evidence_and_findings", research_shell=True,
+        accessibility_preferences=AccessibilityPreferences(text_scale=2.0 if compact else 1.0, reduced_motion=True),
+    )
+    host.resize(960 if compact else 1426, 480 if compact else 786)
+    host.show()
+    try:
+        root = host.rootObject()
+        catalog = root.findChild(QQuickItem, "researchArchivePageList")
+        until(app, lambda: catalog.property("count") > 0)
+        if compact:
+            root.findChild(QQuickItem, "researchArchivePageListButton").forceActiveFocus()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+        catalog.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+        for _ in candidate.evidence:
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Tab)
+        assert visible_item(root, "researchArchivePageLink0").hasActiveFocus()
+        if source_state == "disconnected":
+            updated = feature.advance_to_disconnected(selection)
+        else:
+            updated = feature.replay_scripted_state(selection, replace(
+                ready_state, revision=ready_state.revision + 1, last_reliable_data=None,
+                phase=ViewPhase.FAILED, presentation=EvidenceAndFindingsPresentationState.FAILED,
+                completeness=Completeness.UNKNOWN,
+                error=StructuredFeatureError(code="source_invalid", message="精确来源已失效", retryable=False),
+            ))
+        page = root.findChild(QQuickItem, "researchArchivePage")
+        until(app, lambda: updated.error.message in page.property("statusText"))
+        app.processEvents()
+        details = root.findChild(QQuickItem, "researchArchivePageDetails")
+        if source_state == "invalid":
+            assert "当前没有可读取的资源" in details.property("text")
+            parent_control = root.findChild(QQuickItem, "researchArchivePageListButton") if compact else catalog
+            assert parent_control.hasActiveFocus() and parent_control.isVisible()
+        else:
+            assert visible_item(root, "researchArchivePageLink0").hasActiveFocus()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+            assert "旧证据兼容 · 原始观察" in details.property("text")
+            assert candidate.comparisons[0].reference_evidence_id.value in details.property("text")
+    finally:
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+@pytest.mark.parametrize("resource_context", ["fake"], indirect=True)
+@pytest.mark.parametrize("missing", ["source", "parent"])
+def test_archive_missing_relation_never_reuses_old_content_or_selects_another_object(resource_context, missing):
+    app, context = resource_context
+    selection = exact_evidence_context()
+    feature = context.evidence_and_findings_feature
+    ready = feature.advance_to_completed(selection)
+    data = ready.last_reliable_data
+    candidate = data.candidates[0]
+    comparison = candidate.comparisons[0]
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        evidence_feature=feature, evidence_context=selection,
+        initial_route="evidence_and_findings", research_shell=True,
+    )
+    host.resize(1426, 786)
+    host.show()
+    try:
+        root = host.rootObject()
+        catalog = root.findChild(QQuickItem, "researchArchivePageList")
+        until(app, lambda: catalog.property("count") > 0)
+        catalog.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+        for _ in candidate.evidence:
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Tab)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        count = catalog.property("count")
+        if missing == "parent":
+            changed = replace(
+                candidate,
+                comparisons=tuple(item for item in candidate.comparisons if item.identity != comparison.identity),
+                findings=tuple(replace(finding, comparison_ids=tuple(
+                    item for item in finding.comparison_ids if item != comparison.identity))
+                    for finding in candidate.findings),
+            )
+            replacement = replace(ready, revision=ready.revision + 1,
+                                  last_reliable_data=replace(data, candidates=(changed, *data.candidates[1:])))
+        else:
+            replacement = replace(
+                ready, revision=ready.revision + 1, last_reliable_data=None,
+                phase=ViewPhase.FAILED, presentation=EvidenceAndFindingsPresentationState.FAILED,
+                completeness=Completeness.UNKNOWN,
+                error=StructuredFeatureError(code="source_invalid", message="精确来源已失效", retryable=False),
+            )
+        feature.replay_scripted_state(selection, replacement)
+        until(app, lambda: catalog.property("count") == (count - 1 if missing == "parent" else 0))
+        root.findChild(QQuickItem, "researchArchivePageBack").forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        details = root.findChild(QQuickItem, "researchArchivePageDetails")
+        text = details.property("text")
+        assert "关联资源不可用" in text and "未选择其他对象" in text
+        assert "旧证据兼容 · 原始观察" not in text
+        assert "旧证据兼容 · 原始比较" not in text
+        assert details.hasActiveFocus()
+    finally:
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+@pytest.mark.parametrize("kind", ["record", "comparison", "finding"])
+def test_archive_reads_sealed_file_backed_evidence_through_app_context(tmp_path, request, monkeypatch, kind):
     monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
     app = QApplication.instance() or QApplication([])
     application, engine, campaign, run, package, manifest, _ = _persist_real_formal_v1_through_application(
@@ -442,12 +720,32 @@ def test_archive_reads_sealed_file_backed_evidence_through_app_context(tmp_path,
         until(app, lambda: catalog.property("count") > 0)
         catalog.forceActiveFocus()
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+        candidate = expected.candidates[0]
+        if kind != "record":
+            assert candidate.comparisons
+            for _ in candidate.evidence:
+                QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
+        if kind == "finding":
+            assert candidate.findings
+            for _ in candidate.comparisons:
+                QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
         text = host.rootObject().findChild(QQuickItem, "researchArchivePageDetails").property("text")
-        record = expected.candidates[0].evidence[0]
         assert package.evidence_package_id in text
         assert manifest.manifest_id in text
-        assert record.identity.value in text and f"{record.value} {record.unit}" in text
+        if kind == "record":
+            record = candidate.evidence[0]
+            assert record.identity.value in text and f"{record.value} {record.unit}" in text
+        elif kind == "comparison":
+            comparison = candidate.comparisons[0]
+            assert comparison.identity.value in text
+            assert comparison.reference_evidence_id.value in text
+            assert comparison.observed_evidence_id.value in text
+            assert comparison.interpretation in text
+        else:
+            finding = candidate.findings[0]
+            assert finding.identity.value in text and finding.title in text
+            assert finding.comparison_summary in text and finding.disposition.value in text
         assert expected.candidates[0].provenance.artifact_hashes[0] in text
         assert application.diagnostic_evidence_status(package.evidence_package_id) == package
     finally:
