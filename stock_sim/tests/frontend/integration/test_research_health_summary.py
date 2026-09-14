@@ -147,3 +147,57 @@ def test_partial_recovery_without_reliable_freshness_is_not_presented_as_normal(
     assert "系统状态 · 正常" not in text
     assert "尚无可靠观察" in text
     assert "未发现系统限制" not in text
+
+
+@pytest.mark.parametrize("research_host", [{"bookmark": BOOKMARK, "text_scale": 2.0}], indirect=True)
+def test_compact_completed_task_still_exposes_persistence_fault(healthy_research_host):
+    app, context, host = healthy_research_host
+    root = host.rootObject()
+    popup = root.findChild(QObject, "researchHealthPopup")
+    context.system_health_feature.advance_context_to_completed()
+    context.system_health_feature.advance_to_unavailable()
+    until(app, lambda: popup.property("adapter").property("diagnosticContextResolution") == "completed"
+          and popup.property("adapter").property("persistenceClassification") == "unavailable")
+    host.resize(960, 480)
+    QTest.qWait(30)
+    button = root.findChild(QQuickItem, "researchHealthButton")
+    assert "持久化不可用" in button.property("text")
+    assert "观察新鲜" in button.property("text")
+    assert "关联任务已完成" in QAccessible.queryAccessibleInterface(button).text(QAccessible.Text.Name)
+
+
+@pytest.mark.parametrize("research_host", [{"bookmark": BOOKMARK, "text_scale": 2.0}], indirect=True)
+def test_minimum_window_retains_long_health_summary_and_focus(research_host, record_property):
+    app, context, host = research_host
+    root = host.rootObject()
+    popup = root.findChild(QObject, "researchHealthPopup")
+    context.system_health_feature.advance_to_healthy()
+    context.system_health_feature.advance_context_to_superseded()
+    context.system_health_feature.deliver_data_source_revision(2)
+    until(app, lambda: popup.property("adapter").property("overallClassification") == "context_superseded")
+    assert popup.property("adapter").property("freshness") == "awaiting_first_state"
+    button = root.findChild(QQuickItem, "researchHealthButton")
+    button.forceActiveFocus()
+    for width, height in ((640, 360), (960, 480), (3840, 2160), (640, 360)):
+        host.resize(width, height)
+        QTest.qWait(30)
+        assert host.width() == width and host.height() == height
+        assert button.hasActiveFocus()
+        assert "关联版本已失效" in button.property("text")
+        assert "尚无可靠观察" in button.property("text")
+        assert button.mapToScene(QPointF(0, 0)).x() >= 0
+        assert button.mapToScene(QPointF(button.width(), button.height())).x() <= host.width()
+        label = next(item for item in button.childItems() if item.property("text") == button.property("text"))
+        assert label.mapToScene(QPointF(0, 0)).x() >= 0
+        assert label.mapToScene(QPointF(label.width(), label.height())).x() <= host.width()
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+    QTest.qWait(20)
+    assert popup.property("opened") and host.active_route.value == "strategy_library"
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_Escape)
+    QTest.qWait(20)
+    assert button.hasActiveFocus() and not popup.property("opened")
+    record_property("logical_client", f"{host.width()}x{host.height()}")
+    record_property("dpr", host.devicePixelRatioF())
+    record_property("text_scale", 2.0)
+    if evidence_dir := os.environ.get("STOCKSIM_QML_EVIDENCE_DIR"):
+        assert host.grabFramebuffer().save(str(Path(evidence_dir) / "health-header-640x360-2.0.png"))

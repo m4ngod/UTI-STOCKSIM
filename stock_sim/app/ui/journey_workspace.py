@@ -7431,10 +7431,8 @@ class SystemHealthQtAdapter(QObject):
         return (f"系统状态 · {self.summaryStatusText} · {self.summaryFreshnessText}"
                 f" · {self.summaryImpactText}")
 
-    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
-    def summaryImpactText(self) -> str:  # noqa: N802
-        if self._state is None:
-            return "当前影响待确认"
+    def _summary_concern(self) -> tuple[str, str] | None:
+        """Return the leading display concern and its typed-impact component key."""
         # This selects an observation to explain, never an action capability or
         # execution target. Priority follows the existing health aggregate.
         priority = {
@@ -7456,7 +7454,21 @@ class SystemHealthQtAdapter(QObject):
         )
         concerns = [item for item in observations if item[1] in priority]
         concern = min(concerns, key=lambda item: priority[item[1]]) if concerns else None
-        primary = "未发现系统限制" if concern is None else concern[0] + labels[concern[1]]
+        return None if concern is None else (concern[0] + labels[concern[1]], concern[2])
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def summaryPriorityText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "未知"
+        concern = self._summary_concern()
+        return self.summaryStatusText if concern is None else concern[0]
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def summaryImpactText(self) -> str:  # noqa: N802
+        if self._state is None:
+            return "当前影响待确认"
+        concern = self._summary_concern()
+        primary = "未发现系统限制" if concern is None else concern[0]
         if concern is None and self._state.freshness.value != "fresh":
             primary = "当前影响待确认"
         association = (
@@ -7465,7 +7477,7 @@ class SystemHealthQtAdapter(QObject):
         )
         if concern is not None:
             impact = next((item for item in self._state.component_impacts
-                           if item.component.value == concern[2]), None)
+                           if item.component.value == concern[1]), None)
             scopes = {
                 "diagnostic_task": "旧任务", "task_handle": "任务进度",
                 "formal_diagnostic_campaign": "实验批次", "strategy_run": "运行",
