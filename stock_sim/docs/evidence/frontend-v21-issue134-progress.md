@@ -4,7 +4,157 @@ Date: 2026-09-14. Ticket: https://github.com/m4ngod/UTI-STOCKSIM/issues/134.
 Parent: published specification #132 v1.0. Audited predecessor:
 `f354f0328ba33e10f98b8018e886d170c8d72c0d` (#133).
 
-## Latest per-group health increment
+## Latest product-entry increment and scope correction
+
+Fixed predecessor `2e8222ecfa1e46b4804311ec49aebbe10f058481`; entry source
+`59d944036b3f8b389cf0f583fdffbbd5f22e7a6a`; corrected source
+`04a57b8b00040ae1c91cec4e0583b3b2ae05336e`. This remains local #134 work,
+not whole-ticket acceptance, a default switch, a new specification or a release.
+
+Both existing public entry functions now accept explicit `--research-shell`:
+`setup_frontend_entry.main` and `stock_sim.release.frontend_v2_package_entry.main`.
+They mount the actual AppContext/MainWindow four-page QML, using separate
+`frontend-v21-settings.json` and `layout_v21.json`. The ordinary legacy defaults
+and fallback assets remain. Console research startup does not start the legacy
+runtime support services or register the legacy panels. No Feature version,
+execution owner, real broker or creation capability was added.
+
+### Reproduced boundary failures and corrections
+
+- Public console startup with an invalid Adapter mode, and package startup with
+  a Run ID but no Campaign ID, each raised while leaving a started EventBridge.
+  Fresh-process/public singleton checks and successful explicit stopping exclude
+  a pre-existing bridge and a broken stop operation for these repros. Research
+  entry lifetime cleanup now covers bridge, completed AppContext and window;
+  console research show/exec errors are not silently converted to success.
+- A future-schema bookmark in the new isolated settings was overwritten by the
+  legacy load normalizer. The package entry also lost the existing recovery
+  reason and displayed EXACT. New research entries disable **only load-time**
+  normalization and pass that typed recovery reason to QML. The whole input file
+  remains byte-identical after navigation/exit. Default legacy normalization is
+  unchanged. This is input preservation, not schema3 migration or general backup.
+- The package entry rejects all explicitly supplied legacy Wave 4 certification
+  report/auxiliary options when research mode is selected, before starting or
+  creating reports. Both `--name value` report paths and `--name=value` auxiliary
+  inputs are covered; renderer choice remains valid. No old certificate is used
+  as V2.1 evidence.
+
+Public-entry tests drive actual QML navigation with keyboard Space, open the
+read-only health popup and return focus with Escape. They also verify the three
+old settings/layout files are unchanged. The entry module has 25 cases; the
+expanded targeted run including old console and recovery contracts is **39 passed
+in 3.06 s**, zero failures/errors/skips, in
+`research-entry-corrections-expanded-green.xml`, SHA-256
+`9321F0AAA364042CCE65D8F2F0029E663BF516CED2355B6A29DB81EC12954961`.
+These are offscreen Software QML checks, not installed/native UIA certification.
+
+The earlier `research-startup-failure-red.xml` had a mistaken test error-message
+match, and `research-package-failure-red.xml` had a test syntax error; neither is
+a causal red. Corrected `*-causal-red.xml` reports reproduce actual bridge leaks.
+`research-unknown-bookmark-red.xml` reproduces the byte rewrite and lost reason;
+`research-legacy-aux-arguments-red.xml` reproduces silent acceptance. Subsequent
+green reports and the final regression remain separate artifacts; failures were
+not overwritten or relabelled.
+
+### Native source-entry frame records (not 750 ms acceptance)
+
+Scratch root: `F:/PythonProjects/.scratch/frontend-v21-goal/issue134-20260914/`.
+Probe: `measure_research_product_entry.py`, final SHA-256
+`3A2C352750B82AE54865CFA2F6E27DF7B837AB1AD27A7CC5F7B7884F050439DE`.
+All four retained isolated samples bind to source `04a57b8`; each has a new PID,
+empty settings, disabled QML disk cache, live built-in catalog, Windows native Qt,
+Microsoft YaHei UI, DPR1.0, full timing samples and a saved framebuffer.
+They are not samples from an installed binary or physically cold OS/disk caches.
+
+The external observer creates the real QApplication at the recorded origin;
+the unmodified public entry reuses it. No MainWindow or AppContext is replaced.
+The interval includes QApplication and the public startup; separate script times
+also retain imports. Console measurement includes its default database check.
+The first visible frames still say loading; the measured later resource frames
+show two actual exact legacy versions, not a skeleton substituted for resources.
+
+| Source entry | Actual renderer | PID | Logical client | Pre-QApplication to resource frame |
+| --- | --- | --- | --- | --- |
+| Console | Software | 265420 | 1280x820 | 1770.1008 ms |
+| Console | Direct3D11 | 271848 | 1280x820 | 2006.7906 ms |
+| Package module | Software | 283124 | 1024x640 | 878.1782 ms |
+| Package module | Direct3D11 | 284108 | 1024x640 | 1040.7195 ms |
+
+Directories follow `product-entry-<console|package>-<software|d3d11>-isolated-04a57b8`.
+Report SHA-256, in the table's order:
+
+- `66BA1D40F3592E1643BF7C588176E4FED59D9B66AD9170FFB2D5275E4D13DAA8`
+- `0505531B302C094EE47C57FF14CBF4F7492D8051F633429AA3838173937A6A90`
+- `916954D33A8822BDAC3616379E424F784B4BB60502098D8F879A1117A7A9FE7B`
+- `63F7335411ADFEA737BE93C01911D3C2F58654B9D2D469197B191BFD870606CC`
+
+All four exceed 750 ms; none is PASS. The observer checks public QML resource
+count/status/busy/availability, not typed freshness or source-revision attestation.
+There is no empty-input proof in this probe, no complete startup usability proof,
+and no input interaction or native UIA proof in its screenshots. All four
+framebuffers were visually inspected: four destinations,
+readonly health, actual two-version catalog and explicit unavailable-creation copy.
+All entries returned zero and their public bridge was absent afterward.
+
+The first, **non-isolated** console Software sample (PID302448, 1780.8975 ms) is
+retained in `product-entry-console-software-04a57b8`. Its default health check
+reached the pre-existing local PostgreSQL and called `ensure_models`; it must not
+be counted as an isolated run. No before/after schema audit was captured, so no
+claim of unchanged schema is made. Later measurements set the database URL before
+Python startup and verify the actual engine matches the exact scratch SQLite
+path before invoking the public entry. No connection or system setting was edited.
+
+### Two-axis review
+
+Both reviewers pinned the complete nonempty range
+`git diff 2e8222ecfa1e46b4804311ec49aebbe10f058481...04a57b8b00040ae1c91cec4e0583b3b2ae05336e`.
+
+- Standards: 0 new hard-standard violations/actionable smells. Previously raised
+  lifetime/ignored-argument boundary concerns are resolved for the reproduced
+  paths; no claim that every possible partially constructed resource is tested.
+- Spec: both original P2 findings (unknown input rewrite and lost recovery reason)
+  resolved, 0 new actionable deviations. No schema3 or whole-ticket acceptance.
+
+Reviews were independent, read-only, without reviewer test execution.
+
+### Final corrected-source regression
+
+Both processes terminated with exit0 on frozen source `04a57b8`; only the two
+existing evidence documents changed during their runs. XML readback confirms
+zero failures, errors or skips:
+
+- `research-product-entry-full-regression.xml`: **316 passed**, 450.65s console
+  (450.574s JUnit), 19 modules. Includes prior277 related cases, 25 new public
+  entry cases, 5 retained console cases and 9 legacy recovery contracts. SHA-256
+  `64E6AC3E608FB4DB5ADD56BAC38D54E28354DB89D4A222DB20747BB4980B4DCA`.
+- `research-entry-corrected-legacy-package.xml`: **7 passed**, 71 deselected,
+  185.74s console (185.743s JUnit), the bounded retained package-entry/certification
+  selection. SHA-256
+  `5793DB8D3F6B7557589988791655F9312F59B18FC7B0A4818417FD74ED3B12DA`.
+
+The suites ran in separate offscreen Software processes with per-process scratch
+database/artifact paths. Native startup measurements finished before these test
+runs; the measured frames were not captured while these suites were competing.
+The old retained-Tasks native crash did not recur, but its cause/fix remains
+unproven. These runs are not full-repository or installed-package certification.
+
+### Corrected ticket boundaries
+
+Fresh official bodies confirm #134 OPEN/assigned to m4ngod. #165 explicitly
+depends on #134 and owns schema1/2 to schema3 migration; #164 depends on #142,
+#145 and #162 and owns cross-restart research context. These must **not** become
+reverse prerequisites for this shell-first ticket. No specification/ADR/ticket
+was rewritten. Full installed-candidate A41 750ms certification and complete
+physical DPI/Narrator are later shared gates, not implicit #134 prerequisites.
+Their original requirements remain mandatory for their owning deliveries.
+
+#134 still owns truthful dual-renderer first-projection records, real empty and
+existing resources, local normal/wait/error behavior, subscription continuity,
+compact/normal/wide font100/200 operability and local keyboard/UIA/focus evidence.
+Resource-frame timing alone does not complete those obligations. The source
+entry increment is complete; #134 and the complete implementation goal are not.
+
+## Previous per-group health increment
 
 Source `d10a3c8`, corrections `2ec99b1` and `e1bc5db`: the read-only popup now explains each of
 the six existing observation groups with its own timestamps, available expiry
@@ -266,7 +416,7 @@ SHA-256 binding for the final review-fix run (local file bytes before commit):
 | `app/ui/qml/ResearchWorkspace.qml` | `4298BB88AAE8944A89A51EFBABF6F22E7DE9FBF274B6712C187DDA1A7477C4C8` |
 | `tests/frontend/integration/test_research_workspace_shell.py` | `360DA065F682F14A2A675A13121BC6B3AF891CD3FD45FECE91493B50853D5743` |
 
-## Required next work (not waived or deferred out of #134)
+## Remaining shell-first work (corrected ownership)
 
 ### Execution observation checkpoint — 2026-09-14
 
@@ -292,8 +442,9 @@ hashes and scope are in
    exact context; independently usable task/run observation inside the Lab.
    Do not expose legacy AI authoring as V2.1 creation or invent Attempt/checkpoint
    semantics. Full creation and cross-experiment analysis remain successor slices.
-2. Finish broader semantic focus recovery, modal containment and generation-3
-   durable migration. Basic legacy health parent/overlay routing, readable header
+2. Finish ticket-local semantic focus fallback and modal containment. Schema3
+   migration belongs to #165, and complete cross-restart research context to #164;
+   neither is a #134 prerequisite. Basic legacy health parent/overlay routing, readable header
    and per-group observation facts are implemented in the newer checkpoints;
    their bounded evidence is not full health or migration acceptance.
 3. Extend the now-tested real page switching, observer disposal and full Host
@@ -304,13 +455,14 @@ hashes and scope are in
    That does not certify every remount/lifecycle combination.
 4. Finish compact/normal/wide layout and evidence-region behavior, resizes with open
    drawers, text 100/200%, UIA name/role/value/state and actual client/DPR records.
-5. Extend the recorded source probes to the finished shell and formal package's
-   dual-renderer cold-start and first actual usable frame gates. The two source
-   samples above exceed 750 ms, and the initial untimed TDD projections remain
-   a recorded gap. Formal entry/package integration must not use skeletons,
-   warmed state, a smaller boundary, or inherited Wave 4 exemptions to pass.
-6. Wire the finished shell into normal and packaged entries with explicit legacy
-   compatibility entry; preserve old bookmark generations and exact identities.
+5. Complete the ticket-local usable-state evidence beyond the now-recorded public
+   entry resource frames: typed freshness/source identity, empty input and core
+   operability. Retain the above-budget measurements. Formal installed-candidate
+   A41 certification is later shared work; never claim it from skeletons, warmed
+   state, a smaller boundary or inherited Wave 4 exemptions.
+6. The source console/package-module research entries are now wired explicitly;
+   legacy defaults and original input bytes are preserved. This does not prove
+   the future built/installed candidate, whose evidence belongs to its own gate.
 7. Complete ticket-local standards/spec review, retained journeys and native tests,
    bind final evidence to exact source/input versions, then consider #134 closure.
 

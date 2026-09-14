@@ -4,6 +4,23 @@ Date: 2026-09-14. This is implementation progress, **not ticket acceptance**.
 The full #133–#171 goal remains active. No remote publication, main merge,
 release, production-default switch or system configuration change was performed.
 
+## Subsequent entry checkpoint and ownership correction
+
+Source `04a57b8b00040ae1c91cec4e0583b3b2ae05336e` now connects explicit
+`--research-shell` through both public source entries. It preserves old/default
+files, retains unknown isolated bookmark inputs, propagates recovery reasons and
+cleans up the reproduced failed-start paths. Full entry evidence, native source
+frame timings, test/report hashes and independent review are in
+`frontend-v21-issue134-progress.md`.
+
+Correction to the historical remaining-work wording below: schema3 belongs to
+#165, which depends on #134; complete cross-restart research context belongs to
+#164. Neither is an implicit #134 prerequisite. Full installed-candidate 750ms
+and physical DPI/Narrator are later shared acceptance, not reverse blockers.
+#134 retains its own real empty/existing projection, state/Subscription,
+font100/200 layout and local keyboard/UIA/focus obligations. No health, startup,
+full A-group or whole-ticket acceptance is implied by the entry increment.
+
 ## Per-group observation increment — 2026-09-14
 
 Fixed predecessor `c7283f3f6ab3f93988ef1d7a0e3e8a0d871be58a`; candidate source
@@ -174,8 +191,9 @@ offscreen Software/QAccessible evidence, not native Windows UIA/Narrator,
 system text scale, physical DPI, Direct3D11 or formal packaged cold-start evidence.
 
 Checkpoint locally complete; #134 and the full implementation goal remain open.
-Generation-3 durable recovery, broader native focus/accessibility/DPI,
-normal/package entry, startup and other ticket-local obligations remain.
+At that checkpoint, source entries, startup and local focus/accessibility remained.
+See the newer entry evidence and corrected ownership above: generation-3 recovery
+and the full physical DPI matrix are successor work, not #134 prerequisites.
 
 ## Header-summary increment — 2026-09-14 (previous)
 
@@ -452,11 +470,10 @@ reran tests or certified the entire ticket.
 Review summary: Standards 1 P2 resolved, 0 new; Spec 1 P2 resolved, 0 new. These
 are independent assessments of the same defect, not two distinct product bugs.
 
-At that earlier checkpoint, top-level visible freshness/priority impact, complete per-group observation age,
-generation-3 durable recovery, broader native reflow/UIA/focus, normal/package
-entry and cold-start gates remain unfinished. This local increment does not
-waive or pass any of those obligations. The later header increment above records
-its own narrower progress and remaining per-group/native/recovery/startup gates.
+At that earlier checkpoint, top-level visible freshness/priority impact, complete
+per-group observation age, local native reflow/UIA/focus, source entries and
+cold-start records remained unfinished. Later checkpoints above record bounded
+progress, not full acceptance. Generation-3 migration remains #165 successor work.
 
 ## Source and scope
 
@@ -567,9 +584,10 @@ resolved, 0 outstanding. Their counts are separate, not two different defects.
 
 ## Remaining work
 
-Do not close #134 on this checkpoint. Real application-owned execution and late
-completion across observation disposal, full exact-context health updates/clearing,
-generation-3 bookmark persistence and broader focus recovery, live empty/error/
-waiting states, native per-page accessibility/reflow, normal/package entry and
-startup gates remain. The previous startup measurements bind to older `6d33e71`
-and exceed 750 ms; they are neither current-source nor formal acceptance passes.
+This historical checkpoint did not close #134. Later checkpoints above verify
+bounded execution continuity, exact-context health and source-entry behavior.
+The authoritative current remainder is in `frontend-v21-issue134-progress.md`:
+local empty/error/waiting/usable-state and per-page accessibility/reflow evidence
+still need consolidation/completion. Schema3 persistence is #165, not a reverse
+blocker. Old `6d33e71` measurements are superseded as current-source observations
+by the new `04a57b8` records, but neither set passes formal 750ms acceptance.
