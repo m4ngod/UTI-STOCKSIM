@@ -72,6 +72,8 @@ Popup {
                 text: adapter === null ? "未知：尚无权威系统状态观察。" : [
                     adapter.statusText,
                     "当前影响\n" + adapter.componentImpactText,
+                    "关联工作\n" + adapter.diagnosticObservationText
+                        + (adapter.phase === "loading" ? "" : "\n" + adapter.diagnosticContextExplanation),
                     "运行时 · " + adapter.componentClassification + "\n" + adapter.componentExplanation,
                     "数据源 · " + adapter.dataSourceClassification + " · " + adapter.dataSourceFreshness
                         + "\n" + adapter.dataSourceExplanation + "\n最近可靠观察 · " + adapter.dataSourceLastReliableText
@@ -85,6 +87,8 @@ Popup {
                         + "\n影响 · " + adapter.persistenceAffectedScope,
                     "版本兼容 · " + adapter.versionClassification + "\n" + adapter.versionExplanation
                         + "\n" + adapter.featureRegistryText,
+                    "精确关联与版本\n" + (adapter.phase === "loading"
+                        ? "等待权威观察返回。" : adapter.diagnosticIdentityText),
                     "只读观察；打开或关闭本窗口不会暂停实验。"
                 ].join("\n\n")
                 background: Rectangle {

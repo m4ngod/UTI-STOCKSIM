@@ -52,6 +52,7 @@ from app.features import (
     DiagnosticTaskConfiguration,
     DiagnosticTaskId,
     DiagnosticTaskLifecycle,
+    DiagnosticTaskPresentation,
     DiagnosticTasksCommandResult,
     DiagnosticTasksContext,
     DiagnosticTasksFeature,
@@ -3333,11 +3334,13 @@ class DiagnosticTasksQtAdapter(QObject):
         ) = None,
         route_active: bool = True,
         nonblocking_observation: bool = False,
+        explicit_task_selection: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._feature = feature
         self._context = context or DiagnosticTasksContext.workspace()
+        self._explicit_task_selection = explicit_task_selection
         self._setup_selection_provider = setup_selection_provider
         self._setup_selection_refresh = setup_selection_refresh
         self._setup_selection_sources_current = (
@@ -3401,6 +3404,14 @@ class DiagnosticTasksQtAdapter(QObject):
             )
             self._observation.statusChanged.connect(self.stateChanged)
             self._observation.start(self._context, observe=route_active)
+
+    def _observed_task(self) -> DiagnosticTaskPresentation | None:
+        """Observe an explicit legacy identity without adopting its default Task."""
+        if self._state is None or (
+            self._explicit_task_selection and self._context.task_id is None
+        ):
+            return None
+        return self._state.task
 
     @Slot(int, object)
     def _accept_observation(self, generation: int, state: DiagnosticTasksViewState) -> None:
@@ -3726,7 +3737,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def canPauseCampaign(self) -> bool:  # noqa: N802
         if self._state is None:
             return False
-        task = self._state.task
+        task = self._observed_task()
         return bool(
             task is not None
             and task.handoff.campaign_id is not None
@@ -3738,7 +3749,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def canResumeCampaign(self) -> bool:  # noqa: N802
         if self._state is None:
             return False
-        task = self._state.task
+        task = self._observed_task()
         return bool(
             task is not None
             and task.handoff.campaign_id is not None
@@ -3750,7 +3761,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def canCancelCampaign(self) -> bool:  # noqa: N802
         if self._state is None:
             return False
-        task = self._state.task
+        task = self._observed_task()
         return bool(
             task is not None
             and task.handoff.campaign_id is not None
@@ -3767,7 +3778,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def canPauseCampaignNode(self) -> bool:  # noqa: N802
         if self._state is None:
             return False
-        task = self._state.task
+        task = self._observed_task()
         node = self._actionable_campaign_node()
         return bool(
             task is not None
@@ -3784,7 +3795,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def canResumeCampaignNode(self) -> bool:  # noqa: N802
         if self._state is None:
             return False
-        task = self._state.task
+        task = self._observed_task()
         node = self._actionable_campaign_node()
         return bool(
             task is not None
@@ -3820,7 +3831,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def taskStatusText(self) -> str:  # noqa: N802
         if self._state is None:
             return "Unavailable"
-        task = self._state.task
+        task = self._observed_task()
         if task is None:
             return "No durable Diagnostic Task has been created."
         return (
@@ -3834,7 +3845,7 @@ class DiagnosticTasksQtAdapter(QObject):
         """Read-only presentation of the explicitly selected legacy task."""
         if self._state is None:
             return []
-        task = self._state.task
+        task = self._observed_task()
         if task is None:
             return []
         return [{
@@ -3856,7 +3867,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def taskHandleText(self) -> str:  # noqa: N802
         if self._state is None:
             return "Unavailable"
-        task = self._state.task
+        task = self._observed_task()
         if task is None or not task.task_handles:
             return "Task progress · no persistent TaskHandle is available."
         return "\n".join(
@@ -3882,7 +3893,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def validationStatusText(self) -> str:  # noqa: N802
         if self._state is None:
             return "Unavailable"
-        task = self._state.task
+        task = self._observed_task()
         if task is None:
             return "No Diagnostic Task revision is available for validation."
         validation = task.validation
@@ -3908,7 +3919,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def approvalStatusText(self) -> str:  # noqa: N802
         if self._state is None:
             return "Unavailable"
-        task = self._state.task
+        task = self._observed_task()
         if task is None or task.approval is None:
             return "No exact-revision approval is active."
         approval = task.approval
@@ -3936,7 +3947,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def evidenceHandoffText(self) -> str:
         if self._state is None:
             return "Unavailable"
-        task = self._state.task
+        task = self._observed_task()
         if task is None or task.handoff.campaign_id is None:
             return "No Evidence and Findings handoff is available."
         handoff = task.handoff
@@ -3973,7 +3984,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def campaignLifecycleText(self) -> str:  # noqa: N802
         if self._state is None:
             return "Unavailable"
-        task = self._state.task
+        task = self._observed_task()
         if task is None or task.handoff.campaign_id is None:
             return "No Formal Diagnostic Campaign lifecycle is available."
         lifecycle = task.handoff.campaign_lifecycle
@@ -4108,7 +4119,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def _build_accessibility_announcement_text(self) -> str:
         if self._state is None:
             return self._observation_status() or "尚未获得实验室任务资源观察。"
-        task = self._state.task
+        task = self._observed_task()
         error = self._state.error
         lifecycle = (
             "No Diagnostic Task"
@@ -4160,7 +4171,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def _accessibility_announcement_key(self) -> tuple[object, ...]:
         if self._state is None:
             return ("unobserved", self._observation_status())
-        task = self._state.task
+        task = self._observed_task()
         error = self._state.error
         latest_handle = (
             None
@@ -4277,7 +4288,7 @@ class DiagnosticTasksQtAdapter(QObject):
             self._command_status = "实验室任务资源尚未就绪；未执行操作。"
             self.stateChanged.emit()
             return
-        task = self._state.task
+        task = self._observed_task()
         setup = self._current_setup_selection()
         configuration = self._configuration_from_inventory(
             include_all_cases=True
@@ -4324,7 +4335,7 @@ class DiagnosticTasksQtAdapter(QObject):
             self._command_status = "实验室任务资源尚未就绪；未执行操作。"
             self.stateChanged.emit()
             return
-        task = self._state.task
+        task = self._observed_task()
         if task is None or not self.canValidate:
             self._command_status = (
                 "Validation is unavailable for this task state."
@@ -4365,7 +4376,7 @@ class DiagnosticTasksQtAdapter(QObject):
             self._command_status = "实验室任务资源尚未就绪；未执行操作。"
             self.stateChanged.emit()
             return
-        task = self._state.task
+        task = self._observed_task()
         actor = actor_identity.strip()
         if task is None or not self.canApprove or not actor:
             self._command_status = (
@@ -4433,7 +4444,7 @@ class DiagnosticTasksQtAdapter(QObject):
             self._command_status = "实验室任务资源尚未就绪；未执行操作。"
             self.stateChanged.emit()
             return
-        task = self._state.task
+        task = self._observed_task()
         approval = None if task is None else task.approval
         if (
             task is None
@@ -4485,7 +4496,7 @@ class DiagnosticTasksQtAdapter(QObject):
             self._command_status = "实验室任务资源尚未就绪；未执行操作。"
             self.stateChanged.emit()
             return
-        task = self._state.task
+        task = self._observed_task()
         if task is None or not self.canPauseTask:
             self._lifecycle_unavailable("Task pause")
             return
@@ -4511,7 +4522,7 @@ class DiagnosticTasksQtAdapter(QObject):
             self._command_status = "实验室任务资源尚未就绪；未执行操作。"
             self.stateChanged.emit()
             return
-        task = self._state.task
+        task = self._observed_task()
         if task is None or not self.canResumeTask:
             self._lifecycle_unavailable("Task resume")
             return
@@ -4537,7 +4548,7 @@ class DiagnosticTasksQtAdapter(QObject):
             self._command_status = "实验室任务资源尚未就绪；未执行操作。"
             self.stateChanged.emit()
             return
-        task = self._state.task
+        task = self._observed_task()
         if task is None or not self.canCancelTask:
             self._lifecycle_unavailable("Task cancel")
             return
@@ -4563,7 +4574,7 @@ class DiagnosticTasksQtAdapter(QObject):
             self._command_status = "实验室任务资源尚未就绪；未执行操作。"
             self.stateChanged.emit()
             return
-        task = self._state.task
+        task = self._observed_task()
         if (
             task is None
             or task.handoff.campaign_id is None
@@ -4596,7 +4607,7 @@ class DiagnosticTasksQtAdapter(QObject):
             self._command_status = "实验室任务资源尚未就绪；未执行操作。"
             self.stateChanged.emit()
             return
-        task = self._state.task
+        task = self._observed_task()
         if (
             task is None
             or task.handoff.campaign_id is None
@@ -4629,7 +4640,7 @@ class DiagnosticTasksQtAdapter(QObject):
             self._command_status = "实验室任务资源尚未就绪；未执行操作。"
             self.stateChanged.emit()
             return
-        task = self._state.task
+        task = self._observed_task()
         if (
             task is None
             or task.handoff.campaign_id is None
@@ -4728,7 +4739,7 @@ class DiagnosticTasksQtAdapter(QObject):
             self._command_status = "实验室任务资源尚未就绪；未执行操作。"
             self.stateChanged.emit()
             return
-        task = self._state.task
+        task = self._observed_task()
         node = self._retryable_campaign_node()
         attempt = (
             None
@@ -4812,7 +4823,7 @@ class DiagnosticTasksQtAdapter(QObject):
     ) -> DiagnosticCampaignNodeHandoff | None:
         if self._state is None:
             return None
-        task = self._state.task
+        task = self._observed_task()
         if task is None:
             return None
         terminal = {
@@ -4834,7 +4845,7 @@ class DiagnosticTasksQtAdapter(QObject):
     ) -> DiagnosticCampaignNodeHandoff | None:
         if self._state is None:
             return None
-        task = self._state.task
+        task = self._observed_task()
         if task is None:
             return None
         return next(
@@ -4859,7 +4870,7 @@ class DiagnosticTasksQtAdapter(QObject):
         retryable = self._retryable_campaign_node()
         if retryable is not None:
             return retryable
-        task = self._state.task
+        task = self._observed_task()
         if task is None:
             return None
         return next(
@@ -4875,7 +4886,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def monitoring_context(self) -> RunMonitoringContext | None:
         if self._state is None:
             return None
-        task = self._state.task
+        task = self._observed_task()
         if task is None:
             return None
         handoff = task.handoff
@@ -4912,7 +4923,7 @@ class DiagnosticTasksQtAdapter(QObject):
         if self._state is None:
             return None
 
-        task = self._state.task
+        task = self._observed_task()
         return self._context.task_id if task is None else task.task_id
 
     def journey_selection(self) -> JourneyDiagnosticSelection | None:
@@ -4926,7 +4937,7 @@ class DiagnosticTasksQtAdapter(QObject):
         if self._state is None:
             return None
 
-        task = self._state.task
+        task = self._observed_task()
         if task is None:
             return None
         handoff = task.handoff
@@ -4962,7 +4973,7 @@ class DiagnosticTasksQtAdapter(QObject):
         if self._state is None:
             return ()
 
-        task = self._state.task
+        task = self._observed_task()
         if task is None:
             return ()
         return tuple(
@@ -4979,7 +4990,7 @@ class DiagnosticTasksQtAdapter(QObject):
     def evidence_context(self) -> EvidenceAndFindingsContext | None:
         if self._state is None:
             return None
-        task = self._state.task
+        task = self._observed_task()
         if task is None or not task.handoff.ready_for_evidence_and_findings:
             return None
         handoff = task.handoff
@@ -5194,7 +5205,7 @@ class DiagnosticTasksQtAdapter(QObject):
         if self._setup_selection_provider is None:
             return True
         setup = self._current_setup_selection()
-        task = self._state.task
+        task = self._observed_task()
         if setup is None or task is None:
             return False
         binding_identity = task.setup_selection_context_identity
@@ -5303,6 +5314,10 @@ class RunMonitoringQtAdapter(QObject):
     def journey_selected_run_id(self) -> StrategyRunId | None:
         selection = self._context.selection
         return None if selection is None else selection.run_id
+
+    def observed_selection(self) -> RunMonitoringSelection | None:
+        """Return the exact requested observation without reading backend state."""
+        return self._context.selection
 
     def journey_source_identity(self) -> JourneySourceIdentity | None:
         return _journey_source_identity_from_state(self._state)
@@ -5719,6 +5734,10 @@ class EvidenceAndFindingsQtAdapter(QObject):
     chartGeometryChanged = Signal()
     chartInteractionChanged = Signal()
     deliveryRequested = Signal(int, object)
+
+    def observed_selection(self) -> EvidenceAndFindingsSelection | None:
+        """Return the exact requested observation, including while data loads."""
+        return self._context.selection
 
     def __init__(
         self,
@@ -7454,6 +7473,18 @@ class SystemHealthQtAdapter(QObject):
         return " · ".join(facts)
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
+    def diagnosticObservationText(self) -> str:  # noqa: N802
+        requested = self._context.diagnostic
+        if requested is None:
+            return "未关联任务。"
+        lines = [f"旧任务 · {requested.task_id.value} · r{requested.task_revision}"]
+        if requested.run_id is not None:
+            lines.append(f"运行 · {requested.run_id.value}")
+        if self._state is None:
+            lines.append("关联待校验；尚未判定可用性。")
+        return "\n".join(lines)
+
+    @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def componentImpactText(self) -> str:  # noqa: N802
         if self._state is None:
             return "Component impact is awaiting the first observation."
@@ -8419,6 +8450,7 @@ class JourneyWorkspaceHost(QQuickWidget):
             DiagnosticTasksQtAdapter(
                 diagnostic_tasks_feature,
                 context=diagnostic_tasks_context,
+                explicit_task_selection=research_shell,
                 setup_selection_provider=(
                     self._current_diagnostic_setup_selection
                     if not research_shell and self._strategy_library is not None
@@ -8955,6 +8987,20 @@ class JourneyWorkspaceHost(QQuickWidget):
             system_health_diagnostic_selection is not None
             and self._system_health is not None
         ):
+            health_evidence = evidence_selection
+            if self._research_shell:
+                observed_evidence = (
+                    None if self._evidence_and_findings is None
+                    else self._evidence_and_findings.observed_selection()
+                )
+                if (
+                    observed_evidence is None
+                    or observed_evidence.campaign_id != system_health_diagnostic_selection.campaign_id
+                    or observed_evidence.run_id != system_health_diagnostic_selection.run_id
+                ):
+                    # A hidden Archive may retain another Run. Do not splice its
+                    # evidence into the currently observed health identity graph.
+                    health_evidence = None
             system_context = SystemHealthContext(
                 diagnostic=SystemHealthDiagnosticContext(
                     task_id=system_health_diagnostic_selection.task_id,
@@ -8970,23 +9016,23 @@ class JourneyWorkspaceHost(QQuickWidget):
                     run_id=system_health_diagnostic_selection.run_id,
                     evidence_package_id=(
                         None
-                        if evidence_selection is None
-                        else evidence_selection.evidence_package_id
+                        if health_evidence is None
+                        else health_evidence.evidence_package_id
                     ),
                     finding_id=(
                         None
-                        if evidence_selection is None
-                        else evidence_selection.finding_id
+                        if health_evidence is None
+                        else health_evidence.finding_id
                     ),
                     sensitivity_breakpoint_id=(
                         None
-                        if evidence_selection is None
-                        else evidence_selection.sensitivity_breakpoint_id
+                        if health_evidence is None
+                        else health_evidence.sensitivity_breakpoint_id
                     ),
                     reproduction_manifest_id=(
                         None
-                        if evidence_selection is None
-                        else evidence_selection.reproduction_manifest_id
+                        if health_evidence is None
+                        else health_evidence.reproduction_manifest_id
                     ),
                     approved_recipe_version_ids=(
                         ()
@@ -9099,9 +9145,22 @@ class JourneyWorkspaceHost(QQuickWidget):
         self,
         current: JourneyDiagnosticSelection | None,
     ) -> JourneyDiagnosticSelection | None:
-        if current is not None:
-            return current
-        return self._journey_workspace_bookmark.diagnostic_selection
+        selected = current or self._journey_workspace_bookmark.diagnostic_selection
+        if not self._research_shell or selected is None:
+            return selected
+        observed = None
+        if self._active_route is JourneyWorkspaceRoute.RUN_MONITORING:
+            observed = self._run_monitoring.observed_selection()
+        elif (
+            self._active_route is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
+            and self._evidence_and_findings is not None
+        ):
+            observed = self._evidence_and_findings.observed_selection()
+        if observed is not None and observed.campaign_id == selected.campaign_id:
+            # The Task's default handoff is not the user's exact observation.
+            # Keep Task truth unchanged; only correlate health with this member.
+            return replace(selected, run_id=observed.run_id)
+        return selected
 
     def _current_journey_evidence_selection(
         self,
