@@ -120,6 +120,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         system_health_feature: SystemHealthFeature | None = None,
         system_health_context: SystemHealthContext | None = None,
         frontend_v2_enabled: bool | None = None,
+        research_shell: bool = False,
         rollback_read_only: bool = False,
         layout_path: str = "layout_main.json",
         panel_list: Callable[[], List[Dict[str, Any]]] | None = None,
@@ -128,6 +129,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     ):  # noqa: D401
         super().__init__()  # type: ignore
         self._rollback_read_only = rollback_read_only
+        self._research_shell = research_shell
         self._frontend_v2_enabled = (
             _frontend_v2_route_enabled()
             if frontend_v2_enabled is None
@@ -211,7 +213,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 pass
         try:
             if hasattr(self, 'setMinimumSize'):
-                self.setMinimumSize(900, 600)  # type: ignore[attr-defined]
+                if self._frontend_v2_enabled and research_shell:
+                    self.setMinimumSize(640, 360)
+                else:
+                    self.setMinimumSize(900, 600)  # type: ignore[attr-defined]
             if hasattr(self, 'resize'):
                 self.resize(1280, 820)  # type: ignore[attr-defined]
         except Exception:
@@ -247,6 +252,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         workspace = JourneyWorkspaceHost(
             self._run_monitoring_feature,
+            research_shell=self._research_shell,
             context=self._run_monitoring_context,
             strategy_library_feature=self._strategy_library_feature,
             strategy_library_context=self._strategy_library_context,

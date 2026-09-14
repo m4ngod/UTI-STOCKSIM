@@ -7498,8 +7498,10 @@ class JourneyWorkspaceHost(QQuickWidget):
         initial_route: str = "diagnostic_tasks",
         strategy_library_queries: StrategyAssetQueriesFeature | None = None,
         feature_capabilities: FeatureCapabilityCatalog | None = None,
+        research_shell: bool = False,
     ) -> None:
         super().__init__(parent)
+        self._research_shell = research_shell
         try:
             requested_initial_route = JourneyWorkspaceRoute(initial_route)
         except ValueError:
@@ -7843,7 +7845,8 @@ class JourneyWorkspaceHost(QQuickWidget):
                 system_health_feature,
                 context=system_health_context,
                 route_active=(
-                    initial_route_identity is JourneyWorkspaceRoute.SYSTEM_HEALTH
+                    research_shell
+                    or initial_route_identity is JourneyWorkspaceRoute.SYSTEM_HEALTH
                 ),
                 parent=self,
             )
@@ -7870,7 +7873,8 @@ class JourneyWorkspaceHost(QQuickWidget):
             self._diagnostic_tasks.evidenceHandoffReady.connect(
                 self._open_evidence_and_findings_handoff
             )
-        self.setSource(QUrl.fromLocalFile(str(_QML_ROOT / "JourneyWorkspace.qml")))
+        qml_entry = "ResearchWorkspace.qml" if research_shell else "JourneyWorkspace.qml"
+        self.setSource(QUrl.fromLocalFile(str(_QML_ROOT / qml_entry)))
         if self.status() == QQuickWidget.Status.Error:
             details = "; ".join(error.toString() for error in self.errors())
             raise RuntimeError(f"Failed to load Journey Workspace QML: {details}")
@@ -8865,7 +8869,9 @@ class JourneyWorkspaceHost(QQuickWidget):
         self,
         route: JourneyWorkspaceRoute,
     ) -> None:
-        if route is not JourneyWorkspaceRoute.STRATEGY_LIBRARY:
+        if self._research_shell:
+            self._strategy_assets.setActive(route is JourneyWorkspaceRoute.STRATEGY_LIBRARY)
+        elif route is not JourneyWorkspaceRoute.STRATEGY_LIBRARY:
             self._strategy_assets.setActive(False)
         if self._strategy_library is not None:
             self._strategy_library.set_route_active(
@@ -8888,7 +8894,7 @@ class JourneyWorkspaceHost(QQuickWidget):
             )
         if self._system_health is not None:
             self._system_health.set_route_active(
-                route is JourneyWorkspaceRoute.SYSTEM_HEALTH
+                self._research_shell or route is JourneyWorkspaceRoute.SYSTEM_HEALTH
             )
 
     @Slot()

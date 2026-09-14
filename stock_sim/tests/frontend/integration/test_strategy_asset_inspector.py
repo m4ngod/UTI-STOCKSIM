@@ -166,7 +166,10 @@ def test_read_only_result_has_a_visible_keyboard_focus_indicator(composed, scale
         focus_rgb = QColor("#ffff00" if high_contrast else "#9fbfff").rgb()
 
         def painted_focus_pixels():
-            frame = host.grab().toImage()
+            # Read the current Quick render target, not QWidget's potentially
+            # stale composited backing store. The immutable f354f03 baseline
+            # reproduces stale widget captures after a correct focus change.
+            frame = host.grabFramebuffer()
             dpr = frame.devicePixelRatio()
             origin = detail.mapToScene(QPointF(0, 0))
             # The top edge is blank of text: an insertion cursor cannot pass.
