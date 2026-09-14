@@ -500,6 +500,7 @@ def _create_production_window(
 
     context = build_app_context(
         settings_path=str(settings_path),
+        normalize_journey_bookmark_on_load=not research_shell,
         run_monitoring_mode="live",
         event_bridge=event_bridge,
         runtime_gateway=runtime_gateway,
@@ -547,6 +548,9 @@ def _create_production_window(
                     "persist_journey_workspace_bookmark",
                     None,
                 )
+            ),
+            journey_workspace_recovery=(
+                getattr(getattr(context, "journey_workspace_restore", None), "recovery", None)
             ),
             scenario_lab_feature=context.scenario_lab_feature,
             scenario_lab_context=context.scenario_lab_context,
@@ -596,6 +600,7 @@ def _create_production_window(
                 else None
             ),
             window.close if window is not None else None,
+            context.close if research_shell else None,
             (
                 context.strategy_library_feature.close
                 if hasattr(context, "strategy_library_feature")
@@ -5196,6 +5201,8 @@ def _write_smoke_report(
 
 
 def _run_interactive(*, research_shell: bool = False) -> int:
+    from contextlib import ExitStack
+
     from PySide6.QtWidgets import QApplication
 
     from app.event_bridge import (
@@ -5204,25 +5211,31 @@ def _run_interactive(*, research_shell: bool = False) -> int:
     )
 
     app = QApplication.instance() or QApplication([])
-    bridge = start_frontend_bridge()
-    os.environ["STOCKSIM_FRONTEND_V2"] = "1"
-    context, window, _host = _create_production_window(
-        event_bridge=bridge,
-        settings_path=Path("frontend-v21-settings.json" if research_shell else "frontend-v2-settings.json"),
-        research_shell=research_shell,
-    )
-    window.resize(1024, 640)
-    if research_shell:
-        app.aboutToQuit.connect(context.close)
-    app.aboutToQuit.connect(context.strategy_library_feature.close)
-    app.aboutToQuit.connect(context.scenario_lab_feature.close)
-    app.aboutToQuit.connect(context.diagnostic_tasks_feature.close)
-    app.aboutToQuit.connect(context.run_monitoring_feature.close)
-    app.aboutToQuit.connect(context.evidence_and_findings_feature.close)
-    app.aboutToQuit.connect(context.system_health_feature.close)
-    app.aboutToQuit.connect(stop_frontend_bridge)
-    window.show()
-    return int(app.exec())
+    with ExitStack() as lifetime:
+        if research_shell:
+            lifetime.callback(stop_frontend_bridge)
+        bridge = start_frontend_bridge()
+        os.environ["STOCKSIM_FRONTEND_V2"] = "1"
+        context, window, _host = _create_production_window(
+            event_bridge=bridge,
+            settings_path=Path("frontend-v21-settings.json" if research_shell else "frontend-v2-settings.json"),
+            research_shell=research_shell,
+        )
+        if research_shell:
+            lifetime.callback(context.close)
+            lifetime.callback(window.close)
+        window.resize(1024, 640)
+        if research_shell:
+            app.aboutToQuit.connect(context.close)
+        app.aboutToQuit.connect(context.strategy_library_feature.close)
+        app.aboutToQuit.connect(context.scenario_lab_feature.close)
+        app.aboutToQuit.connect(context.diagnostic_tasks_feature.close)
+        app.aboutToQuit.connect(context.run_monitoring_feature.close)
+        app.aboutToQuit.connect(context.evidence_and_findings_feature.close)
+        app.aboutToQuit.connect(context.system_health_feature.close)
+        app.aboutToQuit.connect(stop_frontend_bridge)
+        window.show()
+        return int(app.exec())
 
 
 def _installed_formal_v1_fixture_archive_path() -> Path:
@@ -5968,8 +5981,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if len(report_modes) > 1:
         parser.error("installed certification report modes are mutually exclusive")
-    if arguments.research_shell and report_modes:
-        parser.error("--research-shell cannot use the legacy Wave 4 certification report modes")
+    if arguments.research_shell:
+        legacy_options = sorted({
+            argument.split("=", 1)[0]
+            for argument in raw_arguments
+            if argument.startswith("--")
+            and argument.split("=", 1)[0] not in {"--research-shell", "--renderer-lane"}
+        })
+        if legacy_options:
+            parser.error("--research-shell cannot use legacy Wave 4 certification options: "
+                         + ", ".join(legacy_options))
     renderer_lane = RendererLane(arguments.renderer_lane)
     configure_renderer_environment(renderer_lane)
     if arguments.installed_dpi_preflight_report is not None:

@@ -265,6 +265,7 @@ def build_app_context(
     system_health_clock: Callable[[], datetime] | None = None,
     system_health_sampling_interval: timedelta | None = timedelta(seconds=1),
     legacy_read_only: bool = False,
+    normalize_journey_bookmark_on_load: bool = True,
     strategy_asset_fixture: StrategyUnderTestInventory | None = None,
     strategy_asset_query_executor: Executor | None = None,
 ) -> AppContext:
@@ -337,7 +338,7 @@ def build_app_context(
         or encode_journey_workspace_bookmark(JourneyWorkspaceBookmark())
     )
     journey_workspace_bookmark = journey_workspace_restore.bookmark
-    if bookmark_payload and (
+    if normalize_journey_bookmark_on_load and bookmark_payload and (
         journey_workspace_restore.migrated
         or journey_workspace_restore.recovery.reason
         is JourneyRecoveryReason.INVALID_BOOKMARK
@@ -664,6 +665,7 @@ def reset_app_context(
         StrategyDiagnosticsV1SystemHealthApplication | None
     ) = None,
     legacy_read_only: bool = False,
+    normalize_journey_bookmark_on_load: bool = True,
 ) -> AppContext:
     global _app_context
     with _lock:
@@ -688,6 +690,7 @@ def reset_app_context(
                 strategy_diagnostics_system_health_application
             ),
             legacy_read_only=legacy_read_only,
+            normalize_journey_bookmark_on_load=normalize_journey_bookmark_on_load,
         )
         if previous is not None:
             previous.close()

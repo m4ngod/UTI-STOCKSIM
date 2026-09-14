@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 import os
 import argparse
+from contextlib import ExitStack
 from typing import Optional
 
 try:
@@ -107,169 +108,178 @@ def _start_frontend(*, headless: bool, research_shell: bool = False):
         # The research runtime starts Qt before composing its application,
         # retaining that full interval for first-projection measurement.
         app = QApplication.instance() or QApplication([])
-    event_bridge = start_frontend_bridge()
-    context = (reset_app_context(event_bridge=event_bridge, settings_path="frontend-v21-settings.json")
-               if research_shell else reset_app_context(event_bridge=event_bridge))
-    if not research_shell:
-        start_runtime_support_services()
+    with ExitStack() as lifetime:
+        if research_shell:
+            lifetime.callback(stop_frontend_bridge)
+        event_bridge = start_frontend_bridge()
+        context = (reset_app_context(event_bridge=event_bridge, settings_path="frontend-v21-settings.json",
+                                     normalize_journey_bookmark_on_load=False)
+                   if research_shell else reset_app_context(event_bridge=event_bridge))
+        if research_shell:
+            lifetime.callback(context.close)
+        if not research_shell:
+            start_runtime_support_services()
 
-        register_builtin_panels()
-        try:
-            register_ui_adapters()
-        except Exception as e:
-            if _DEBUG_GUI_START:
-                print(f"[frontend-start] register_ui_adapters failed: {e!r}", file=sys.stderr)
-            raise
-    app = QApplication.instance() or QApplication([])
-    if research_shell:
-        app.aboutToQuit.connect(context.close)
-    try:
-        app.aboutToQuit.connect(stop_frontend_bridge)  # type: ignore[attr-defined]
-        strategy_library_feature = getattr(
-            context,
-            "strategy_library_feature",
-            None,
-        )
-        if strategy_library_feature is not None:
-            app.aboutToQuit.connect(  # type: ignore[attr-defined]
-                strategy_library_feature.close
-            )
-        diagnostic_tasks_feature = getattr(
-            context,
-            "diagnostic_tasks_feature",
-            None,
-        )
-        if diagnostic_tasks_feature is not None:
-            app.aboutToQuit.connect(  # type: ignore[attr-defined]
-                diagnostic_tasks_feature.close
-            )
-        scenario_lab_feature = getattr(context, "scenario_lab_feature", None)
-        if scenario_lab_feature is not None:
-            app.aboutToQuit.connect(scenario_lab_feature.close)  # type: ignore[attr-defined]
-        app.aboutToQuit.connect(context.run_monitoring_feature.close)  # type: ignore[attr-defined]
-        evidence_feature = getattr(
-            context,
-            "evidence_and_findings_feature",
-            None,
-        )
-        if evidence_feature is not None:
-            app.aboutToQuit.connect(evidence_feature.close)  # type: ignore[attr-defined]
-        system_health_feature = getattr(
-            context,
-            "system_health_feature",
-            None,
-        )
-        if system_health_feature is not None:
-            app.aboutToQuit.connect(system_health_feature.close)  # type: ignore[attr-defined]
-    except Exception:
-        pass
-    mw = MainWindow(
-        research_shell=research_shell,
-        frontend_v2_enabled=True if research_shell else None,
-        layout_path="layout_v21.json" if research_shell else "layout_main.json",
-        strategy_library_queries=getattr(context, "strategy_library_queries", None),
-        feature_capabilities=(context.feature_capabilities()
-                              if callable(getattr(context, "feature_capabilities", None)) else None),
-        strategy_library_feature=getattr(
-            context,
-            "strategy_library_feature",
-            None,
-        ),
-        strategy_library_context=getattr(
-            context,
-            "strategy_library_context",
-            None,
-        ),
-        strategy_library_bookmark_sink=(
-            getattr(context, "persist_strategy_library_bookmark", None)
-        ),
-        journey_workspace_bookmark=getattr(
-            context,
-            "journey_workspace_bookmark",
-            None,
-        ),
-        journey_workspace_bookmark_sink=getattr(
-            context,
-            "persist_journey_workspace_bookmark",
-            None,
-        ),
-        journey_workspace_recovery=getattr(
-            getattr(context, "journey_workspace_restore", None),
-            "recovery",
-            None,
-        ),
-        scenario_lab_feature=getattr(
-            context,
-            "scenario_lab_feature",
-            None,
-        ),
-        scenario_lab_context=getattr(
-            context,
-            "scenario_lab_context",
-            None,
-        ),
-        diagnostic_tasks_feature=getattr(
-            context,
-            "diagnostic_tasks_feature",
-            None,
-        ),
-        diagnostic_tasks_context=getattr(
-            context,
-            "diagnostic_tasks_context",
-            None,
-        ),
-        diagnostic_setup_selection_coordinator=getattr(
-            context,
-            "diagnostic_setup_selection_coordinator",
-            None,
-        ),
-        run_monitoring_feature=context.run_monitoring_feature,
-        run_monitoring_context=getattr(
-            context,
-            "run_monitoring_context",
-            None,
-        ),
-        evidence_and_findings_feature=getattr(
-            context,
-            "evidence_and_findings_feature",
-            None,
-        ),
-        evidence_and_findings_context=getattr(
-            context,
-            "evidence_and_findings_context",
-            None,
-        ),
-        system_health_feature=getattr(
-            context,
-            "system_health_feature",
-            None,
-        ),
-        system_health_context=getattr(
-            context,
-            "system_health_context",
-            None,
-        ),
-    )
-    try:
-        from app.ui.ui_refresh import register_main_window as _ui_register_main_window  # type: ignore
-        _ui_register_main_window(mw)
-    except Exception:
-        pass
-    if not mw.journey_workspace_active:
-        for name in DEFAULT_PRELOAD_PANELS:
+            register_builtin_panels()
             try:
-                mw.open_panel(name)
-                if _DEBUG_GUI_START:
-                    print(f"[frontend-start] opened preload panel: {name}", file=sys.stderr)
+                register_ui_adapters()
             except Exception as e:
                 if _DEBUG_GUI_START:
-                    print(f"[frontend-start] failed preload panel {name}: {e!r}", file=sys.stderr)
-    try:
-        mw.show()
-        app.exec()
-    except Exception:
-        pass
-    return mw
+                    print(f"[frontend-start] register_ui_adapters failed: {e!r}", file=sys.stderr)
+                raise
+        app = QApplication.instance() or QApplication([])
+        if research_shell:
+            app.aboutToQuit.connect(context.close)
+        try:
+            app.aboutToQuit.connect(stop_frontend_bridge)  # type: ignore[attr-defined]
+            strategy_library_feature = getattr(
+                context,
+                "strategy_library_feature",
+                None,
+            )
+            if strategy_library_feature is not None:
+                app.aboutToQuit.connect(  # type: ignore[attr-defined]
+                    strategy_library_feature.close
+                )
+            diagnostic_tasks_feature = getattr(
+                context,
+                "diagnostic_tasks_feature",
+                None,
+            )
+            if diagnostic_tasks_feature is not None:
+                app.aboutToQuit.connect(  # type: ignore[attr-defined]
+                    diagnostic_tasks_feature.close
+                )
+            scenario_lab_feature = getattr(context, "scenario_lab_feature", None)
+            if scenario_lab_feature is not None:
+                app.aboutToQuit.connect(scenario_lab_feature.close)  # type: ignore[attr-defined]
+            app.aboutToQuit.connect(context.run_monitoring_feature.close)  # type: ignore[attr-defined]
+            evidence_feature = getattr(
+                context,
+                "evidence_and_findings_feature",
+                None,
+            )
+            if evidence_feature is not None:
+                app.aboutToQuit.connect(evidence_feature.close)  # type: ignore[attr-defined]
+            system_health_feature = getattr(
+                context,
+                "system_health_feature",
+                None,
+            )
+            if system_health_feature is not None:
+                app.aboutToQuit.connect(system_health_feature.close)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        mw = MainWindow(
+            research_shell=research_shell,
+            frontend_v2_enabled=True if research_shell else None,
+            layout_path="layout_v21.json" if research_shell else "layout_main.json",
+            strategy_library_queries=getattr(context, "strategy_library_queries", None),
+            feature_capabilities=(context.feature_capabilities()
+                                  if callable(getattr(context, "feature_capabilities", None)) else None),
+            strategy_library_feature=getattr(
+                context,
+                "strategy_library_feature",
+                None,
+            ),
+            strategy_library_context=getattr(
+                context,
+                "strategy_library_context",
+                None,
+            ),
+            strategy_library_bookmark_sink=(
+                getattr(context, "persist_strategy_library_bookmark", None)
+            ),
+            journey_workspace_bookmark=getattr(
+                context,
+                "journey_workspace_bookmark",
+                None,
+            ),
+            journey_workspace_bookmark_sink=getattr(
+                context,
+                "persist_journey_workspace_bookmark",
+                None,
+            ),
+            journey_workspace_recovery=getattr(
+                getattr(context, "journey_workspace_restore", None),
+                "recovery",
+                None,
+            ),
+            scenario_lab_feature=getattr(
+                context,
+                "scenario_lab_feature",
+                None,
+            ),
+            scenario_lab_context=getattr(
+                context,
+                "scenario_lab_context",
+                None,
+            ),
+            diagnostic_tasks_feature=getattr(
+                context,
+                "diagnostic_tasks_feature",
+                None,
+            ),
+            diagnostic_tasks_context=getattr(
+                context,
+                "diagnostic_tasks_context",
+                None,
+            ),
+            diagnostic_setup_selection_coordinator=getattr(
+                context,
+                "diagnostic_setup_selection_coordinator",
+                None,
+            ),
+            run_monitoring_feature=context.run_monitoring_feature,
+            run_monitoring_context=getattr(
+                context,
+                "run_monitoring_context",
+                None,
+            ),
+            evidence_and_findings_feature=getattr(
+                context,
+                "evidence_and_findings_feature",
+                None,
+            ),
+            evidence_and_findings_context=getattr(
+                context,
+                "evidence_and_findings_context",
+                None,
+            ),
+            system_health_feature=getattr(
+                context,
+                "system_health_feature",
+                None,
+            ),
+            system_health_context=getattr(
+                context,
+                "system_health_context",
+                None,
+            ),
+        )
+        if research_shell:
+            lifetime.callback(mw.close)
+        try:
+            from app.ui.ui_refresh import register_main_window as _ui_register_main_window  # type: ignore
+            _ui_register_main_window(mw)
+        except Exception:
+            pass
+        if not mw.journey_workspace_active:
+            for name in DEFAULT_PRELOAD_PANELS:
+                try:
+                    mw.open_panel(name)
+                    if _DEBUG_GUI_START:
+                        print(f"[frontend-start] opened preload panel: {name}", file=sys.stderr)
+                except Exception as e:
+                    if _DEBUG_GUI_START:
+                        print(f"[frontend-start] failed preload panel {name}: {e!r}", file=sys.stderr)
+        try:
+            mw.show()
+            app.exec()
+        except Exception:
+            if research_shell:
+                raise
+        return mw
 
 
 def main(argv: Optional[list[str]] = None) -> int:
