@@ -182,6 +182,23 @@ SHA-256 binding for the final review-fix run (local file bytes before commit):
 
 ## Required next work (not waived or deferred out of #134)
 
+### Execution observation checkpoint — 2026-09-14
+
+Source `80f33e502c782042880b01bae7df25518988c31a` adds real in-flight public
+Start evidence for page switching, health overlay use and view-observer disposal.
+Unused legacy selection/form reads no longer block these research page changes;
+Scenario observation reads are asynchronous and retained content is marked stale
+while waiting or after an explained, recoverable read failure. Final local
+regression: **191 passed**. This is one real completed Campaign Case, not a new
+automatic scheduler or full campaign completion.
+
+An independent full-Host remount probe still **fails**. Its targeted stack shows
+an initial legacy Strategy snapshot waiting for the running calculation; other
+eager construction reads remain to be isolated. The 191 passing regression cases
+do not include or negate that known failure. Full review details, source/report
+hashes and scope are in
+`frontend-v21-issue134-execution-continuity-progress.md`. #134 remains OPEN.
+
 ### Remaining implementation and verification
 
 1. Finish resource-state coverage after the existing Scenario/Lab/Archive reads
@@ -193,8 +210,10 @@ SHA-256 binding for the final review-fix run (local file bytes before commit):
    and impact, broader semantic focus recovery and modal containment. Basic legacy
    health parent/overlay routing is implemented; generation-3 durable migration
    and real execution continuity are not complete.
-3. Test switching pages during real execution and late read completion; demonstrate
-   disposal of page observations without cancellation of application work.
+3. Extend the now-tested real page switching and observer disposal to full Host
+   remount, active Lab task/run selection and late completion across context
+   generations. The confirmed eager-construction blocking read is still open;
+   view disposal passing is not remount acceptance.
 4. Finish compact/normal/wide layout and evidence-region behavior, resizes with open
    drawers, text 100/200%, UIA name/role/value/state and actual client/DPR records.
 5. Extend the recorded source probes to the finished shell and formal package's
