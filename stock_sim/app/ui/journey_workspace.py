@@ -784,6 +784,7 @@ class ScenarioLabQtAdapter(QObject):
 
     stateChanged = Signal()
     deliveryRequested = Signal(int, object)
+    observationFinished = Signal(int, str)
 
     def __init__(
         self,
@@ -794,6 +795,7 @@ class ScenarioLabQtAdapter(QObject):
             Callable[[], tuple[StrategyUnderTestId, ...]] | None
         ) = None,
         route_active: bool = True,
+        nonblocking_observation: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -812,16 +814,69 @@ class ScenarioLabQtAdapter(QObject):
         )
         self._mount_generation = _next_mount_generation()
         self._route_active = route_active
+        self._nonblocking_observation = nonblocking_observation
+        self._subscription_lock = Lock()
+        self._observation_message = ""
         self._closed = False
         self.deliveryRequested.connect(
             self._accept_state,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._subscription: Subscription | None = (
-            feature.subscribe(self._context, self._queue_state)
-            if route_active
-            else None
+        self.observationFinished.connect(
+            self._finish_observation, Qt.ConnectionType.QueuedConnection,
         )
+        self._subscription: Subscription | None = None
+        if route_active:
+            if nonblocking_observation:
+                self._start_observation()
+            else:
+                self._subscription = feature.subscribe(self._context, self._queue_state)
+
+    def _start_observation(self) -> None:
+        generation = self._mount_generation.value
+        context = self._context
+        self._observation_message = "正在读取场景资源；后台计算继续，保留上次有效观察。"
+        self.stateChanged.emit()
+        Thread(
+            target=self._observe_worker, args=(generation, context),
+            name="research-scenario-observation", daemon=True,
+        ).start()
+
+    def _observe_worker(self, generation: int, context: ScenarioLabContext) -> None:
+        def deliver(state: ScenarioLabViewState) -> None:
+            if self._closed or not self._route_active or generation != self._mount_generation.value:
+                return
+            try:
+                self.deliveryRequested.emit(generation, state)
+            except RuntimeError:
+                return  # The view can be deleted after the generation check.
+
+        error = ""
+        try:
+            subscription = self._feature.subscribe(context, deliver)
+        except RuntimeError:
+            error = "场景资源观察暂不可用；可重新进入场景库重试。"
+        else:
+            with self._subscription_lock:
+                obsolete = (
+                    self._closed or not self._route_active
+                    or generation != self._mount_generation.value
+                )
+                if not obsolete:
+                    self._subscription = subscription
+            if obsolete:
+                subscription.dispose()
+        try:
+            self.observationFinished.emit(generation, error)
+        except RuntimeError:
+            return
+
+    @Slot(int, str)
+    def _finish_observation(self, generation: int, error: str) -> None:
+        if self._closed or generation != self._mount_generation.value:
+            return
+        self._observation_message = error
+        self.stateChanged.emit()
 
     def _queue_state(self, state: ScenarioLabViewState) -> None:
         if not self._closed and self._route_active:
@@ -1312,6 +1367,8 @@ class ScenarioLabQtAdapter(QObject):
 
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def statusMessage(self) -> str:  # noqa: N802
+        if self._observation_message:
+            return self._observation_message
         if self._state.error is not None:
             return self._state.error.message
         return {
@@ -2395,11 +2452,15 @@ class ScenarioLabQtAdapter(QObject):
             return
         self._route_active = active
         self._mount_generation = _next_mount_generation()
-        subscription = self._subscription
-        self._subscription = None
+        with self._subscription_lock:
+            subscription = self._subscription
+            self._subscription = None
         if subscription is not None:
             subscription.dispose()
         if active:
+            if self._nonblocking_observation:
+                self._start_observation()
+                return
             self._state = self._feature.snapshot(self._context)
             self._subscription = self._feature.subscribe(
                 self._context,
@@ -2413,8 +2474,9 @@ class ScenarioLabQtAdapter(QObject):
         self._closed = True
         self._route_active = False
         self._mount_generation = _next_mount_generation()
-        subscription = self._subscription
-        self._subscription = None
+        with self._subscription_lock:
+            subscription = self._subscription
+            self._subscription = None
         if subscription is not None:
             subscription.dispose()
 
@@ -7843,7 +7905,8 @@ class JourneyWorkspaceHost(QQuickWidget):
                 context=strategy_library_context,
                 bookmark_sink=strategy_library_bookmark_sink,
                 route_active=(
-                    initial_route_identity
+                    not research_shell
+                    and initial_route_identity
                     is JourneyWorkspaceRoute.STRATEGY_LIBRARY
                 ),
                 parent=self,
@@ -7883,6 +7946,7 @@ class JourneyWorkspaceHost(QQuickWidget):
                 route_active=(
                     initial_route_identity is JourneyWorkspaceRoute.SCENARIO_LAB
                 ),
+                nonblocking_observation=research_shell,
                 parent=self,
             )
             if scenario_lab_feature is not None
@@ -7948,7 +8012,10 @@ class JourneyWorkspaceHost(QQuickWidget):
             "diagnosticTasks",
             self._diagnostic_tasks,
         )
-        if self._diagnostic_tasks is not None:
+        # The research resource pages do not mount the legacy creation form.
+        # Its upstream-selection refresh performs synchronous reads and must
+        # not run merely because another read-only page changed observation.
+        if self._diagnostic_tasks is not None and not research_shell:
             if self._strategy_library is not None:
                 self._strategy_library.stateChanged.connect(
                     self._diagnostic_tasks.upstreamSelectionChanged
@@ -9049,7 +9116,11 @@ class JourneyWorkspaceHost(QQuickWidget):
             self._strategy_assets.setActive(False)
         if self._strategy_library is not None:
             self._strategy_library.set_route_active(
-                route is JourneyWorkspaceRoute.STRATEGY_LIBRARY
+                # ResearchAssetPage observes the exact-query extension. The old
+                # selection screen is not mounted there and must not perform a
+                # second synchronous inventory read during page navigation.
+                not self._research_shell
+                and route is JourneyWorkspaceRoute.STRATEGY_LIBRARY
             )
         if self._scenario_lab is not None:
             self._scenario_lab.set_route_active(
