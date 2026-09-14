@@ -4,7 +4,147 @@ Date: 2026-09-14. This is local implementation progress, **not ticket acceptance
 The full #133–#171 goal remains active. No #134 push, PR, main merge, release,
 production-default switch, paid AI invocation or system settings change occurred.
 
-## Source and exact scope
+## Latest remount and exact-selection checkpoint
+
+The earlier remount failure below is historical, not the current result for the
+tested Scenario entry. Source `044db2afe32801bc2ab5ae16939edfc7d0a877cd` defers
+initial research observations; review fix
+`35f64e4d51027252476553c1df24ae5bd6b9f0d2` protects exact selections and corrects
+cold-read wording. Both descend from evidence checkpoint
+`0e08b085fd9bfdaac2907b0db44d700597ebfb6d`. The formal specification hash below
+was reverified unchanged; D10 exact observation supplements D01/D02/D09.
+
+### Implementation and limits
+
+- Strategy, Scenario and Diagnostic Tasks research projections now share
+  `FeatureObservation` for initial and later public reads/Subscriptions. Pending,
+  failure and cancellation belong to observation only. The adapters retain typed
+  state or no observation; they do not invent source generations or domain state.
+  Context, mount and read generations reject obsolete delivery; a late-acquired
+  Subscription is disposed if its observation is no longer current.
+- The unmounted legacy task creation form no longer initializes upstream
+  selection providers in the research shell. Legacy default constructors,
+  subscriptions, commands and form wiring retain their original behavior. No
+  public Feature Interface, AppContext ownership or persistent schema changed.
+- Two public live remount cases exercise Scenario-only and all-Feature Host
+  composition with an exact Task. They first observe Scenario, dispose the view,
+  submit one real Start, then reconstruct on the same AppContext while the real
+  embedded invocation is held. Health keyboard interaction remains responsive;
+  releasing the invocation yields an accepted exact receipt, one completed case
+  and readable Scenario resources. The unchanged original full-Host scratch
+  reproducer also passes on 044db2a. This does not cover every exact Run/Evidence
+  constructor or an automatic execution scheduler.
+- Review found that a hidden Task's first asynchronous read could replace an
+  explicitly observed member of the same legitimate Campaign with its default
+  handoff member. In research composition, passive recovery now fills only an
+  empty selection. Existing Run/Evidence selections remain pinned even while
+  loading; explicit Start/Retry navigation remains a separate replacement path.
+  Both initialization and late handoffs use the same passive guard.
+- Four live Host cases cover Run/Evidence entry with an explicit alternative
+  member or no selection. The latter must still recover the Task's exact default.
+  They create and finish records through public commands/application queries;
+  their explicit `advance_diagnostic_campaign` call is **test preparation only**,
+  not evidence of an automatic scheduler. Assertions inspect actual QML content
+  and the public Journey evidence manifest, never private adapter state.
+- A real SQLite read gate reproduces typed initial loading without reliable
+  inventory. This must not claim an old valid observation. Warm reliable content
+  still retains its stale explanation. The gate is test-only, not a pause API.
+- Two existing approved-version/draft resource tests now wait for the actual QML
+  list to receive its rows rather than treating backend readiness as UI delivery.
+  Their exact identities, counts, hashes and draft/approved distinction are
+  unchanged; no frame-paint or startup threshold is inferred from this wait.
+
+### Remount/review evidence
+
+All reports are in the scratch evidence directory stated below. Earlier failures
+are retained without relabelling, skipping or replacing their bytes.
+
+| Behavior | Red / diagnostic | Green |
+| --- | --- | --- |
+| Cold Scenario construction during real computation | `scenario-remount-isolated-red.xml`: 1 failed. | `scenario-remount-isolated-green.xml`: 1 passed. |
+| Full Host construction after fixing Scenario alone | `full-remount-after-scene-red.xml`: 1 failed. | `full-remount-deferred-read-probe.xml`: 2 passed; original reproducer `execution-remount-original-green.xml`: 1 passed, 4.65 s. |
+| Queued approved/draft delivery reaches QML | `remount-resource-regression-probe.xml`: 2 failed, 51 passed; list still had zero rows after backend readiness. | `remount-shared-observation-targeted.xml`: 5 passed, including both resource cases, both remount cases and DB failure recovery. |
+| Hidden Task must not replace an explicit member | `exact-member-initial-read-public-red.xml`: 2 failed, 14.14 s; wrong Run and wrong exact evidence manifest. | `exact-member-and-missing-recovery-green.xml`: 4 passed, 23.01 s, including missing-selection recovery. |
+| Cold wait cannot claim retained reliable data | `cold-scenario-wait-message-public-red.xml`: 1 failed, 2.89 s, exact false retention message. | Included in `remount-selection-review-targeted-green.xml`: all 12 cases passed, 42.06 s. |
+
+The first `cold-scenario-wait-message-red.xml` failed on an incorrect test wait
+for a literal English `loading` label; it is not causal behavioral red. The
+corrected public test waits for the exposed typed source generation to reach QML
+and then asserts the actual user-visible text. The earlier evidence-detail probe
+incorrectly expected a manifest in a row's text; the decisive two-case red above
+uses the public Journey manifest selection instead.
+
+Source 044db2a expanded regression: `remount-full-regression-candidate.xml`,
+**234 passed**, 250.03 s. Source 35f64e4 final related regression:
+`remount-reviewed-full-regression.xml`, **239 passed**, 290.88 s console total
+(290.842 s JUnit suite), zero failures, errors or skips. Counts: 12 execution/
+remount/selection, 25 shell, 31 resources, 25 Journey Rail, 12 Journey workspace,
+30 health, 21 exact-query contract, 39 inspector, 15 Scenario, 19 Tasks,
+8 Strategy and 2 live Run-to-Evidence journey tests.
+Runtime remains Python 3.11.9 / PySide6 6.9.1, isolated offscreen Software. No new
+native frames, physical-DPI, UIA/Narrator or startup acceptance was recorded.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `remount-full-regression-candidate.xml` | `D71D8A8C4C127254CFDA0F6388FE2DCB4BB16DC3EE1C208C60EE23C80A236A1A` |
+| `remount-reviewed-full-regression.xml` | `82516DA58E080518FB84B203CDD3F6B9D955BE21BB850F3A6ADA67FBE122845E` |
+| `remount-selection-review-targeted-green.xml` | `5FFAC8C12E45A2BBA537F054C94F49ACE60BBB0F86FC0A68E6D899911F76D046` |
+| `exact-member-initial-read-public-red.xml` | `A9716D01E319A2E75BC768CA6A54734159C1BFB0DB514AF45C766780CB38EDAD` |
+| `cold-scenario-wait-message-public-red.xml` | `2BEB6649F033956CA6D0FD90D6D2263212B2FB68E9A7B8A9C7B813A70DA9A24D` |
+| `execution-remount-original-green.xml` | `2FFE1405EC7858C2C7171B292D2F2B6EE34BF15769A1ED0060A029BDDC025590` |
+
+### Separate exact-entry diagnostic after the final regression
+
+On unchanged source 35f64e4, the original full Scenario scratch reproducer passed
+again. A new isolated public probe then prepared completed Campaign A, created and
+approved a distinct Task B, and submitted one real public Start for B. Its test
+gate was rearmed only at the embedded-host timing boundary. While B's invocation
+was held, it rebuilt the full Host on exact Run A or exact Evidence A, verified
+the pinned identity and health keyboard return, released B and verified A was
+still observed while B had actually completed one case.
+
+`exact-entry-remount-pinned-observation-probe.xml`: **2 passed**, 14.80 s. This
+separate scratch diagnostic is not included in the 239 committed-test count;
+promotion into permanent regression and broader selection/lifecycle cases remain.
+The initial `remount-original-and-exact-entry-diagnostic.xml` is **1 passed and
+2 setup failures**: it tried to obtain sealed manifests before its preparation
+had completed a campaign. The next `exact-entry-remount-two-tasks-diagnostic.xml`
+also has **2 setup failures**, from expecting the first typed task-loading
+snapshot to contain a task. Neither report establishes a product remount failure.
+After correcting preparation through existing public helpers,
+`exact-entry-remount-two-tasks-public-probe.xml` passed both cases, then the final
+pinned-observation probe added identity checks before and after B completed.
+
+| Separate artifact | SHA-256 |
+| --- | --- |
+| `test_execution_exact_entry_remount_probe.py` | `31E86DECBCC1B2EBD09CD2F8E3CF80D91D5185D68E92C508501E448266E15207` |
+| `exact-entry-remount-pinned-observation-probe.xml` | `8ACABE20FB6B57C394573816B04C9618E8C98B509C7DDA49E0895D616BCCE704` |
+
+### Standards
+
+Independent review of fixed `0e08b08...044db2a` identified one P2 hard violation:
+passive initial Task delivery could replace an exact observation (ADR0036/0038).
+Recheck of verified nonempty `0e08b08...35f64e4` confirms it resolved, with zero
+new hard violations and zero new specific heuristic smells. The shared initial
+observation resolves the earlier three-adapter lifecycle branch drift in research
+composition; this does not prove other exact-entry lifecycle paths.
+
+### Spec
+
+The independent Spec axis identified P2 D10 late selection contamination and P3
+D02 false retention wording. Recheck of the same final range confirms both fixed,
+with zero new deviations. Explicit Start/Retry remains distinct from passive
+recovery and no execution/domain-state owner was added. Both reviewers read code
+and test assertions without rerunning tests; neither certified the full ticket.
+
+Review summary: Standards 1 P2 resolved, 0 new; Spec 1 P2 and 1 P3 resolved, 0 new.
+Next is to promote the exact-entry diagnostic and broaden live selection and
+health-context continuity, generation-3 durability,
+native reflow/accessibility, normal/package entry and startup gates. #134 remains
+OPEN. Previously recorded over-750-ms samples are not waived or called current
+passes.
+
+## Historical execution checkpoint — source and exact scope
 
 - Predecessor: `bde63b0269ed425841c1594c11af35b76015d8ba`.
 - Initial execution isolation: `f55db4e98b9d0bfd3291ec21434fa0e6dd85e98a`.

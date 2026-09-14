@@ -64,6 +64,19 @@ confirmed it resolved; no outstanding new findings. Scope limits and source-boun
 reports are in `frontend-v21-issue134-health-routing-progress.md`. This does not
 prove real background execution continuity or complete #134.
 
+Latest execution/remount checkpoint: `044db2a` unifies the research Strategy,
+Scenario and Tasks initial/subsequent observation lifecycle; `35f64e4` prevents
+passive Task recovery from replacing exact Run/Evidence selections and corrects
+cold-read wording. The real in-flight Scenario remount probe now passes both
+minimal and all-Feature composition. Default legacy behavior remains unchanged.
+Final related offscreen regression on 35f64e4: **239 passed in 290.88 s**, including
+12 new execution/observation cases and the retained Strategy, Scenario, Tasks,
+Run-to-Evidence, Journey and health paths. Standards confirmed its P2 resolved
+with 0 new hard/specific heuristic findings; Spec confirmed P2/P3 resolved with
+0 new deviations. Full reproduction history and scope limits are recorded in
+`frontend-v21-issue134-execution-continuity-progress.md`. These are local progress
+results, not complete #134, an automatic scheduler, formal DPI or startup PASS.
+
 ## Evidence recorded so far
 
 Evidence folder: `F:/PythonProjects/.scratch/frontend-v21-goal/issue134-20260914/`.
