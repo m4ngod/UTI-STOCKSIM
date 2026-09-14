@@ -13,6 +13,8 @@ from app.ui.observation_text_selection import remap_observation_selection
     ("A\nkept\nB", "A\nB", 2, 6, [2, 2]),
     ("A\n\U0001f7e2状态\nB", "AA\n\U0001f7e2状态\nBBB", 2, 6, [3, 7]),
     ("old", "", 0, 3, [0, 0]),
+    ("old kept suffix", "new prefix kept suffix!", 4, 8, [11, 15]),
+    ("A\nrepeat\nC\nrepeat\nend", "AAAA\nrepeat\nCCCC\nrepeat\nend", 11, 17, [17, 23]),
 ])
 def test_selection_tracks_surviving_utf16_content(previous, current, anchor, position, expected):
     assert remap_observation_selection(previous, current, anchor, position) == expected
