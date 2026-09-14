@@ -31,6 +31,7 @@ from app.features.strategy_asset_contract import StrategyAssetQueriesFeature
 from app.ui.strategy_asset_inspector import StrategyAssetInspectorQtAdapter
 from app.ui.feature_observation import FeatureObservation
 from app.ui.health_observation_text import health_observation_text
+from app.ui.observation_text_selection import remap_observation_selection
 
 from app.features import (
     ApproveDiagnosticTaskConfiguration,
@@ -7444,6 +7445,10 @@ class SystemHealthQtAdapter(QObject):
     @Property(str, notify=stateChanged)  # type: ignore[arg-type]
     def observationDetailsText(self) -> str:  # noqa: N802
         return health_observation_text(self._state)
+
+    @Slot(str, str, int, int, result="QVariantList")  # type: ignore[arg-type]
+    def remapObservationSelection(self, previous: str, current: str, anchor: int, position: int) -> list[int]:  # noqa: N802
+        return remap_observation_selection(previous, current, anchor, position)
 
     def _summary_concern(self) -> tuple[str, str] | None:
         """Return the leading display concern and its typed-impact component key."""

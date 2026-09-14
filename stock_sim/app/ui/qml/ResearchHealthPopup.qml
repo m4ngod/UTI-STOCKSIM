@@ -82,10 +82,11 @@ Popup {
                 function presentObservation() {
                     if (text === observedText)
                         return
-                    const previousPosition = cursorPosition
-                    const wasAtEnd = text.length > 0 && previousPosition === text.length
+                    const anchor = cursorPosition === selectionStart ? selectionEnd : selectionStart
+                    const selection = adapter === null ? [0, 0]
+                        : adapter.remapObservationSelection(text, observedText, anchor, cursorPosition)
                     text = observedText
-                    cursorPosition = wasAtEnd ? text.length : Math.min(previousPosition, text.length)
+                    select(selection[0], selection[1])
                 }
                 onObservedTextChanged: presentObservation()
                 Component.onCompleted: presentObservation()

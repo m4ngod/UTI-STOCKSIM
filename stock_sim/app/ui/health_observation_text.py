@@ -18,7 +18,8 @@ from app.features.system_health import (
 _CLASSIFICATION = {
     "healthy": "正常", "degraded": "受限", "stale": "已过期",
     "unavailable": "不可用", "incompatible": "不兼容", "unknown": "未知",
-    "recovering": "恢复中", "fallback": "使用回退", "not_applicable": "不适用",
+    "recovering": "恢复中", "recovered": "已恢复",
+    "fallback": "使用回退", "not_applicable": "不适用",
 }
 _FRESHNESS = {
     "fresh": "新鲜", "stale": "已过期", "awaiting_first_state": "尚无可靠观察",
@@ -83,9 +84,16 @@ def health_observation_text(state: SystemHealthViewState | None) -> str:
                                   DiagnosticQueueHealthComponent,
                                   DiagnosticCacheHealthComponent, PersistenceHealthComponent)):
             reliable_age = component.freshness in (Freshness.FRESH, Freshness.STALE)
+            freshness = _FRESHNESS.get(component.freshness.value, "未知")
+            if isinstance(component, PersistenceHealthComponent):
+                # The old projection can emit FRESH/zero for an unsuccessful
+                # first read. Only its explicit successful observation dates age.
+                reliable_age = reliable_age and component.last_successful_observation_at is not None
+                if component.last_successful_observation_at is None:
+                    freshness = f"尚无可靠观察（旧接口标记：{freshness}）"
             age = f"{component.age.total_seconds():.1f} 秒" if reliable_age else "未知"
             lines.extend((
-                "时效 · " + _FRESHNESS.get(component.freshness.value, "未知"),
+                "时效 · " + freshness,
                 "观察年龄 · " + age,
                 f"过期阈值 · {component.freshness_threshold.total_seconds():.1f} 秒；以本组权威时效为准",
             ))

@@ -1,15 +1,25 @@
 """Per-group health evidence through public Feature observations and actual QML."""
 
+from dataclasses import replace
 from datetime import timedelta
 import os
 from pathlib import Path
 
 import pytest
 
-from PySide6.QtCore import QObject, Qt
-from PySide6.QtGui import QAccessible
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
+from PySide6.QtGui import QAccessible, QFont, QFontDatabase
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
+
+from app.app_context import build_app_context
+from app.event_bridge import EventBridge
+from app.features import LiveStrategyDiagnosticsV1ApplicationAdapter
+from app.features.system_health import RuntimeHealthClassification
+from app.features.system_health_application import LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter
+from app.ui.journey_workspace import JourneyWorkspaceHost
+from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import _formal_live_stack
 
 from tests.frontend.integration.test_research_health_summary import BOOKMARK, healthy_research_host
 from tests.frontend.integration.test_research_workspace_shell import research_host
@@ -80,11 +90,67 @@ def test_missing_observation_does_not_report_a_reliable_zero_age(research_host):
     facts = root.findChild(QQuickItem, "researchHealthFacts")
     until(app, lambda: "数据源 · " in facts.property("text"))
     text = facts.property("text")
-    for name in ("数据源", "队列", "缓存"):
+    for name in ("数据源", "队列", "缓存", "持久化"):
         group = next(part for part in text.split("\n\n") if part.startswith(name + " · "))
         assert "时效 · 尚无可靠观察" in group
         assert "观察年龄 · 未知" in group
         assert "观察年龄 · 0.0 秒" not in group
+
+
+def test_recovered_runtime_from_public_application_input_keeps_all_groups(tmp_path, monkeypatch):
+    class RecoveredRuntimeInput(LiveStrategyDiagnosticsV1SystemHealthApplicationAdapter):
+        """Deliver a legal input at the public health-application boundary."""
+
+        def read_runtime_health(self):
+            result = super().read_runtime_health()
+            assert result.observation is not None
+            return replace(result, observation=replace(
+                result.observation, classification=RuntimeHealthClassification.RECOVERED,
+            ))
+
+    monkeypatch.setenv("STOCKSIM_FRONTEND_V2", "1")
+    app = QApplication.instance() or QApplication([])
+    if not QFontDatabase.families():
+        assert QFontDatabase.addApplicationFont("C:/Windows/Fonts/msyh.ttc") >= 0
+        app.setFont(QFont("Microsoft YaHei UI", 10))
+    _, _, engine, application, _, auxiliary = _formal_live_stack(tmp_path)
+    bridge = EventBridge(subscribe_backend=False)
+    context = host = None
+    try:
+        context = build_app_context(
+            settings_path=str(tmp_path / "settings.json"), run_monitoring_mode="live",
+            strategy_diagnostics_application=application,
+            strategy_diagnostics_read_model=LiveStrategyDiagnosticsV1ApplicationAdapter(application, engine),
+            strategy_diagnostics_system_health_application=RecoveredRuntimeInput(application),
+            event_bridge=bridge, system_health_sampling_interval=None,
+        )
+        host = JourneyWorkspaceHost(context.run_monitoring_feature,
+                                  system_health_feature=context.system_health_feature,
+                                  research_shell=True)
+        host.resize(1426, 786)
+        host.show()
+        root = host.rootObject()
+        adapter = root.findChild(QObject, "researchHealthPopup").property("adapter")
+        until(app, lambda: adapter.property("componentClassification") == "recovered")
+        root.findChild(QQuickItem, "researchHealthButton").forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+        facts = root.findChild(QQuickItem, "researchHealthFacts")
+        text = QAccessible.queryAccessibleInterface(facts).text(QAccessible.Text.Value)
+        assert "运行时 · 已恢复" in text
+        for name in ("数据源", "队列", "缓存", "持久化", "版本兼容"):
+            assert name + " · " in text
+    finally:
+        if host is not None:
+            host.close_adapter()
+            host.close()
+            host.deleteLater()
+        if context is not None:
+            context.close()
+        auxiliary.close()
+        bridge.stop()
+        engine.dispose()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
 
 
 @pytest.mark.parametrize("research_host", [
@@ -100,6 +166,7 @@ def test_all_group_details_are_keyboard_readable_and_read_only(healthy_research_
     facts = root.findChild(QQuickItem, "researchHealthFacts")
     accessible = QAccessible.queryAccessibleInterface(facts)
     assert accessible.state().readOnly
+    assert facts.property("cursorPosition") == 0
     value = accessible.text(QAccessible.Text.Value)
     for name in ("运行时", "数据源", "队列", "缓存", "持久化", "版本兼容"):
         assert name + " · 正常" in value
@@ -142,5 +209,46 @@ def test_observation_updates_do_not_pull_the_reader_away_from_the_end(healthy_re
     QTest.qWait(30)
     assert facts.hasActiveFocus()
     assert facts.property("cursorPosition") == len(facts.property("text"))
+    bottom = facts.mapToScene(facts.property("cursorRectangle").bottomRight()).y()
+    assert 0 < bottom <= host.height()
+
+
+@pytest.mark.parametrize("research_host", [{"bookmark": BOOKMARK, "text_scale": 2.0,
+                                           "size": (960, 480)}], indirect=True)
+@pytest.mark.parametrize("select", ["none", "forward", "backward"])
+def test_observation_updates_preserve_reading_within_an_unchanged_section(healthy_research_host, select):
+    app, context, host = healthy_research_host
+    root = host.rootObject()
+    root.findChild(QQuickItem, "researchHealthButton").forceActiveFocus()
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+    facts = root.findChild(QQuickItem, "researchHealthFacts")
+    facts.forceActiveFocus()
+    token = "版本兼容 · 正常"
+    before = facts.property("text")
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home, Qt.KeyboardModifier.ControlModifier)
+    for _ in range(before.index(token)):
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Right)
+    if select == "backward":
+        for _ in token:
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Right)
+        for _ in token:
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Left, Qt.KeyboardModifier.ShiftModifier)
+        assert facts.property("selectedText") == token
+    elif select == "forward":
+        for _ in token:
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier)
+        assert facts.property("selectedText") == token
+    else:
+        assert before[facts.property("cursorPosition"):].startswith(token)
+    context.system_health_feature.advance_clock(timedelta(seconds=31))
+    until(app, lambda: "观察年龄 · 31.0 秒" in facts.property("text"))
+    QTest.qWait(30)
+    assert facts.hasActiveFocus()
+    if select != "none":
+        assert facts.property("selectedText") == token
+        expected_end = "selectionStart" if select == "backward" else "selectionEnd"
+        assert facts.property("cursorPosition") == facts.property(expected_end)
+    else:
+        assert facts.property("text")[facts.property("cursorPosition"):].startswith(token)
     bottom = facts.mapToScene(facts.property("cursorRectangle").bottomRight()).y()
     assert 0 < bottom <= host.height()
