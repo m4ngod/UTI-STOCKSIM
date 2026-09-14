@@ -1,4 +1,4 @@
-"""Exact legacy observation survives view remount while another real Task runs.
+"""Health and remount preserve the exact observed legacy work.
 
 Public application advance only prepares completed evidence. The active command
 uses the real embedded strategy host; no automatic scheduler is claimed here.
@@ -33,7 +33,7 @@ from tests.frontend.integration.test_research_resource_pages import until
 
 @pytest.fixture
 def completed_campaign_observation(live_execution):
-    app, context, application, _, gate = live_execution
+    _, context, application, _, gate = live_execution
     gate.release.set()
     feature = context.diagnostic_tasks_feature
     approved = _approved_formal_task(feature)
@@ -46,7 +46,6 @@ def completed_campaign_observation(live_execution):
     assert receipt.accepted and receipt.affected_campaign_id is not None
     application.advance_diagnostic_campaign(receipt.affected_campaign_id.value,
         max_cases=64, nodes_per_batch=10_000)
-    task_context = DiagnosticTasksContext(task_id=approved.task_id)
     task = _read_task(feature, approved.task_id)
     node, run = next((node, run) for node in task.handoff.campaign_nodes
                     for attempt in node.attempts for run in attempt.runs
@@ -64,6 +63,36 @@ def completed_campaign_observation(live_execution):
         reproduction_manifest_id=run.reproduction_manifest_id,
     ))
     return task, run, run_context, evidence_context
+
+
+def _approve_independent_task(feature, task):
+    created = feature.create_diagnostic_task(_command(task.configuration,
+        command_id="exact-remount-other-create", idempotency_key="exact-remount-other-create"))
+    assert created.affected_task_id is not None and created.affected_task_id != task.task_id
+    other = _read_task(feature, created.affected_task_id)
+    assert other is not None
+    validated = feature.validate_configuration(ValidateDiagnosticTaskConfiguration(
+        command_id=DiagnosticCommandId("exact-remount-other-validate"),
+        idempotency_key=DiagnosticCommandIdempotencyKey("exact-remount-other-validate"),
+        task_id=other.task_id, expected_revision=other.revision,
+    ))
+    assert validated.accepted
+    other = _read_task(feature, created.affected_task_id)
+    assert other is not None
+    validation = other.validation
+    accepted = feature.approve_configuration(ApproveDiagnosticTaskConfiguration(
+        command_id=DiagnosticCommandId("exact-remount-other-approve"),
+        idempotency_key=DiagnosticCommandIdempotencyKey("exact-remount-other-approve"),
+        task_id=other.task_id, expected_revision=other.revision,
+        validation_id=validation.validation_id, validation_revision=validation.validation_revision,
+        validated_revision=validation.validated_revision,
+        configuration_content_id=validation.configuration_content_identity,
+        actor_id=DiagnosticActorId("wave2-release-owner"),
+    ))
+    assert accepted.accepted
+    other = _read_task(feature, created.affected_task_id)
+    assert other is not None
+    return other
 
 
 @pytest.mark.parametrize("size,scale", [((1426, 786), 1.0), ((960, 480), 2.0)])
@@ -259,32 +288,7 @@ def test_exact_entry_remount_preserves_observation_while_other_task_runs(
     task_context = DiagnosticTasksContext(task_id=task.task_id)
     # A second real, independently identified Task supplies the active command;
     # the observed Campaign above is already complete and has exact manifests.
-    created = feature.create_diagnostic_task(_command(task.configuration,
-        command_id="exact-remount-other-create", idempotency_key="exact-remount-other-create"))
-    assert created.affected_task_id is not None and created.affected_task_id != task.task_id
-    other = _read_task(feature, created.affected_task_id)
-    assert other is not None
-    validated = feature.validate_configuration(ValidateDiagnosticTaskConfiguration(
-        command_id=DiagnosticCommandId("exact-remount-other-validate"),
-        idempotency_key=DiagnosticCommandIdempotencyKey("exact-remount-other-validate"),
-        task_id=other.task_id, expected_revision=other.revision,
-    ))
-    assert validated.accepted
-    other = _read_task(feature, created.affected_task_id)
-    assert other is not None
-    validation = other.validation
-    accepted = feature.approve_configuration(ApproveDiagnosticTaskConfiguration(
-        command_id=DiagnosticCommandId("exact-remount-other-approve"),
-        idempotency_key=DiagnosticCommandIdempotencyKey("exact-remount-other-approve"),
-        task_id=other.task_id, expected_revision=other.revision,
-        validation_id=validation.validation_id, validation_revision=validation.validation_revision,
-        validated_revision=validation.validated_revision,
-        configuration_content_id=validation.configuration_content_identity,
-        actor_id=DiagnosticActorId("wave2-release-owner"),
-    ))
-    assert accepted.accepted
-    other = _read_task(feature, created.affected_task_id)
-    assert other is not None
+    other = _approve_independent_task(feature, task)
     hosts = []
     worker = ThreadPoolExecutor(max_workers=1)
 
@@ -369,5 +373,60 @@ def test_exact_entry_remount_preserves_observation_while_other_task_runs(
             host.close_adapter()
             host.close()
             host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+@pytest.mark.parametrize("destination", ["run_monitoring", "evidence_and_findings"])
+def test_health_clears_an_unrelated_campaign_association(
+    live_execution, completed_campaign_observation, destination,
+):
+    app, context, _, _, _ = live_execution
+    feature = context.diagnostic_tasks_feature
+    task, run, run_context, evidence_context = completed_campaign_observation
+    other = _approve_independent_task(feature, task)
+    started = feature.start_formal_diagnostic_campaign(StartFormalDiagnosticCampaign(
+        command_id=DiagnosticCommandId("unrelated-start"),
+        idempotency_key=DiagnosticCommandIdempotencyKey("unrelated-start"),
+        task_id=other.task_id, expected_revision=other.revision, approved_revision=other.revision,
+    ))
+    assert started.accepted and started.affected_campaign_id is not None
+    assert started.affected_campaign_id != task.handoff.campaign_id
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature, context=run_context,
+        diagnostic_tasks_feature=feature,
+        diagnostic_tasks_context=DiagnosticTasksContext(task_id=other.task_id),
+        evidence_feature=context.evidence_and_findings_feature, evidence_context=evidence_context,
+        system_health_feature=context.system_health_feature,
+        initial_route="diagnostic_tasks", research_shell=True,
+    )
+    host.resize(1426, 786)
+    host.show()
+    try:
+        root = host.rootObject()
+        popup = root.findChild(QObject, "researchHealthPopup")
+        facts = root.findChild(QQuickItem, "researchHealthFacts")
+        until(app, lambda: other.task_id.value in facts.property("text"))
+        assert host.activate_route(JourneyWorkspaceRoute(destination))
+        root.findChild(QQuickItem, "researchHealthButton").forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+        until(app, lambda: popup.property("adapter").property("phase") != "loading")
+        assert other.task_id.value not in facts.property("text")
+        assert "未关联任务" in facts.property("text")
+        assert popup.property("adapter").property("diagnosticContextResolution") == "no_current_task"
+        assert host.active_route.value == destination
+        if destination == "run_monitoring":
+            summary = root.findChild(QQuickItem, "researchExistingResourceSummary")
+            until(app, lambda: run.run_id.value in summary.property("text"))
+        else:
+            until(app, lambda: host.journey_context.evidence_selection is not None)
+            assert host.journey_context.evidence_selection.reproduction_manifest_id == run.reproduction_manifest_id
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Escape)
+        assert host.activate_route(JourneyWorkspaceRoute.DIAGNOSTIC_TASKS)
+        until(app, lambda: other.task_id.value in facts.property("text"))
+    finally:
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         app.processEvents()

@@ -7476,7 +7476,7 @@ class SystemHealthQtAdapter(QObject):
     def diagnosticObservationText(self) -> str:  # noqa: N802
         requested = self._context.diagnostic
         if requested is None:
-            return "未关联任务。"
+            return "未关联任务；当前观察未建立可校验的任务关联，仅显示系统级事实。"
         lines = [f"旧任务 · {requested.task_id.value} · r{requested.task_revision}"]
         if requested.run_id is not None:
             lines.append(f"运行 · {requested.run_id.value}")
@@ -9045,6 +9045,10 @@ class JourneyWorkspaceHost(QQuickWidget):
                 )
             )
             self._system_health.set_context(system_context)
+        elif self._research_shell and self._system_health is not None:
+            # An unrelated retained Task must not survive an unassociated
+            # observation. set_context also quarantines its late deliveries.
+            self._system_health.set_context(SystemHealthContext())
         self._update_context_recovery(
             strategy_selection,
             scenario_selection,
@@ -9156,7 +9160,9 @@ class JourneyWorkspaceHost(QQuickWidget):
             and self._evidence_and_findings is not None
         ):
             observed = self._evidence_and_findings.observed_selection()
-        if observed is not None and observed.campaign_id == selected.campaign_id:
+        if observed is not None:
+            if observed.campaign_id != selected.campaign_id:
+                return None
             # The Task's default handoff is not the user's exact observation.
             # Keep Task truth unchanged; only correlate health with this member.
             return replace(selected, run_id=observed.run_id)

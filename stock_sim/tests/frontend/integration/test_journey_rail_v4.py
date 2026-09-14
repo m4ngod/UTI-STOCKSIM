@@ -515,6 +515,7 @@ def test_system_health_alone_retains_durable_selection_during_transient_empty() 
         run_id=durable.run_id,
     )
     host = SimpleNamespace(
+        _research_shell=False,
         _journey_workspace_bookmark=JourneyWorkspaceBookmark(
             diagnostic_selection=durable
         ),
