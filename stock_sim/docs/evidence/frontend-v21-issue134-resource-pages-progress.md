@@ -7,6 +7,154 @@ ready-for-agent. The sandbox credential lookup returned 401; host read succeeded
 No comments or remote state were changed. The published #132 v1.0 SHA-256 remains
 `A4D64B033E55DCD5203B6204AA01932501EEBD06AE55BAB45EDF2FCDF48C839E`.
 
+## Truthful resource-state increment — 2026-09-14
+
+Fixed predecessor `2822d90e7f32abb48c01f5a6cde14f5f1c9a4450`; frozen production
+source `efddd31e53f411b1aea0a16b5af1a76acf38abb5`; final test-only correction
+`2d70427dad8b6598ada0e2d6bfb044d2fed23082`. The official #134 body was read
+again: OPEN, assigned to m4ngod. Only its body was read, not third-party comments.
+This is local shell-first work, not a Feature Interface change or ticket closure.
+
+| Before | After | Why |
+| --- | --- | --- |
+| An empty list claimed there were no readable resources even while the first database read was pending or failing. | The detail body retains the actual pending/error status. | Missing data is not evidence of an empty source. |
+| A completed empty Scenario read used an unscoped generic message. | Only fresh ready/empty observations explain that no old Scenarios, approved versions or drafts are available. | The message describes the actual observed inventory, not future creation capabilities. |
+| Lab and Archive without a requested identity exposed only raw state words. | They explicitly say no old Task/evidence was selected and no other object is selected automatically. | An absent selection is not an empty library or permission to substitute another identity. |
+
+The shared browser now delegates its empty-detail message to the page; populated
+selection, lineage navigation, scrolling, focus and retained observations are
+unchanged. Two readonly Qt properties project the existing requested Task and
+Evidence contexts. They create no second domain state, implicit selection,
+execution owner, new Feature version or persistence schema. The UI skills guided
+concise task-specific copy and preservation of immediate keyboard behavior; no
+new animation or layout redesign was introduced in this increment.
+
+### Real input and red/green boundary
+
+`test_research_resource_states.py` uses a newly initialized SQLite database through
+the public application and live AppContext. Its real Scenario snapshot is
+`live_runtime`, generation 1, phase ready, freshness fresh, completeness empty;
+the Scenario/version/draft tuples are all empty. Source revision is
+`1af28518889c2640527176f6b32ee7686e1240d17e83973c0b9b28dfac41aff3`.
+This is not an empty Combination-catalog claim: that legacy live catalog still
+contains its two built-in versions. No provider or application result is replaced.
+
+The existing real-application continuity test holds the external SQL read and
+reproduces the cold pending body incorrectly asserting emptiness. A separate
+external SQL read fault produces a safe unavailable state; removing the fault
+and keyboard-navigating away/back recovers a genuine fresh empty observation.
+Lab/Archive tests use the actual no-selection typed contexts. All database and
+artifact environment settings are established before Python starts; no original
+database or system configuration is used by these runs.
+
+Retained reports under the scratch root above:
+
+- `resource-wait-not-empty-red.xml`: 1 behavioral failure; corresponding green:
+  1 passed, 3.589 s.
+- `resource-real-empty-red.xml`: 1 scoped-empty wording failure; corresponding
+  green including the held-read test: 2 passed, 3.740 s.
+- `resource-no-selection-red.xml`: 2 wording failures; subsequent combined
+  `resource-state-semantics-green.xml`: 11 passed, 4.393 s.
+- `resource-real-empty-matrix.xml`: 8 passed/1 failed because the test omitted
+  StrategyLibrary from the host, disabling the navigation needed for retry. This
+  is a fixture error, not a product retry defect. Corrected public composition
+  in `resource-real-empty-matrix-fixed-fixture.xml`: 9 passed, 3.923 s.
+- `resource-state-recorded-matrix.xml`: 14 passed, 6.276 s, zero failures/errors/
+  skips. SHA-256 `3C1E2E34CAE3E93D304A16625E79ABF8F2B971652595336D790571A5E1586554`.
+  Recorded before the final metadata-only removal of duplicate properties and
+  addition of explicit font scale to error/no-selection cases in efddd31.
+
+### Native renderer and layout evidence
+
+The same actual QML tests ran with the Windows platform, source efddd31, fresh
+scratch persistence and reduced motion. Scenario-empty cases cover logical
+960x480, 960x540, 1426x786 and 2600x1400, each at text 100% and 200%; database-error
+and Lab/Archive no-selection cases cover 960x480 at both text scales. Actual
+client dimensions and DPR1.0 are recorded per case. This is application font
+scaling, not a changed Windows DPI setting or the full physical-DPI matrix.
+
+- `resource-states-native-software-efddd31/results.xml`: 14 passed, 7.100 s;
+  all recorded APIs are Software. SHA-256
+  `8FBB4495BD3553ECC2D1722CBDDA69CC54B7642F950D1E991B10F9A126DF4283`.
+- The first `resource-states-native-d3d11-efddd31/results.xml` also passed 14
+  cases but **actually used Software**. Its name is not proof of a renderer.
+  SHA-256 `B512F6B46BB3477DDA9F017078E40B496CB0B3EB22BF8BBB338015E09F1DF45B`.
+  It is retained as a misconfigured sample, not Direct3D11 evidence.
+- Cause: the imported legacy `test_evidence_and_findings_route.py` supplies
+  `QT_QUICK_BACKEND=software` via `setdefault`. The native harness had removed
+  the variable, allowing that default to win. The renderer-mismatch assertion
+  reproduced this explicitly. The corrected harness sets an explicit empty
+  backend in Python for normal RHI selection and verifies every recorded API.
+  No product code changed. This environment-only correction distinguishes the
+  import-default cause from hardware failure or an already initialized renderer.
+- `resource-states-native-d3d11-verified-efddd31/results.xml`: 14 passed,
+  10.110 s; **every actual API is Direct3D11**, checked by the runner. SHA-256
+  `FC5F03DA9F08CFDEB85E3039707DB2102FD77C87E074170E3FE675646A7EE831`.
+- Corrected scratch runner `run-resource-states-native.ps1` SHA-256:
+  `2E4E31276E6C95F80DD76A557CFC0429F1E99319A73E472A1DBAAA1B1566234B`.
+
+Framebuffers are retained under each run's `frames/`. Visually inspected samples
+include compact Scenario empty/error at text200%, wide Scenario empty at text100%,
+and compact Lab/Archive no-selection at text200%. The primary message is readable;
+long limitations remain in the scrollable readonly region. Existing raw legacy
+status terminology is still visible. This is not final visual acceptance.
+The native runs overlapped the separate broad regression process; their suite
+durations are **not** startup or rendering-latency benchmarks.
+
+### Standards
+
+Independent final fixed-range review `2822d90...2d70427`: 0 documented hard violations,
+0 actionable baseline-smell findings. Existing typed contexts supply the new
+readonly properties; public application/Feature/QML seams exercise the behavior.
+The reviewer did not execute tests. The additional existing-test changes preserve
+identity clearing, visible focus fallback and disconnected drill-down checks while
+requiring the actual invalid reason and excluding empty/no-selection wording.
+
+### Spec
+
+Independent review of the same range: 0 new actionable deviations or scope creep.
+D02's retained/loading distinction, D10's requested-source continuity and D15's
+no-substitution boundary are preserved. The reviewer did not execute tests and
+did not certify the whole ticket, native UIA/DPI or the 750 ms target.
+
+### Regression result and corrected existing assertions
+
+The frozen-production 20-module run `resource-state-reviewed-regression.xml`
+finished with **327 passed and 3 failed**, no errors/skips, 460.79 s console
+(460.699 s JUnit), SHA-256
+`023DD3107F62BD109FE3600A80AE4587437F07DABEDE5FA4321D7A3A33855DE1`.
+It includes the previously exercised 316 contract/old-route/product-entry/
+continuity/resource/health/text cases and 14 new resource-state cases.
+
+All three failures were old Archive invalid-reference assertions requiring the
+previous generic empty-resource sentence. The actual body already showed the
+correct precise invalid-reference error. Commit 2d70427 changes only those test
+assertions: require the precise reason, reject generic emptiness and reject the
+no-selection guide. All prior identity-clearing, list-empty, header-error and
+normal/compact focus fallback assertions remain.
+
+Both complete resource modules then passed: **45 passed**, 50.80 s console
+(50.775 s JUnit), no failures/errors/skips, including the three previously failing
+cases. Report `resource-state-existing-assertions-green.xml`, SHA-256
+`0EA0C15E28FF6BE7407E17967C40738ACBE00E2B9998F844F4DBD16E4F90C9BD`.
+Production source remained byte-identical to efddd31. The other 285 cases were
+not rerun after the test-only correction; do not describe the retained 330-case
+report as a single all-green final run or sum overlapping runs as unique tests.
+Both processes terminated normally (first exit1, corrected resource run exit0).
+The seven retained package tests from the previous entry increment were not
+rerun for this readonly text change; their historical evidence remains separate.
+
+### Remaining native accessibility boundary
+
+QAccessible readonly/name/role and actual QML keyboard focus are checked in these
+tests. They are not a substitute for Windows UIA name/role/value/state/focus.
+The current Computer Use runtime failed during initialization with
+`failed to write kernel assets: 系统找不到指定的路径。 (os error 3)`; resetting its
+kernel and initializing once more produced the same error. No Windows app input
+was sent through that tool, no fallback PowerShell UIA was used, and no tool or
+system configuration was changed. Native UIA remains **unverified**. Full Narrator
+and physical DPI are still later shared gates, not claimed by this increment.
+
 ## Implemented read paths
 
 - Scenario Library: actual existing Market Scenarios, approved Recipe Versions

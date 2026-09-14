@@ -4,7 +4,36 @@ Date: 2026-09-14. Ticket: https://github.com/m4ngod/UTI-STOCKSIM/issues/134.
 Parent: published specification #132 v1.0. Audited predecessor:
 `f354f0328ba33e10f98b8018e886d170c8d72c0d` (#133).
 
-## Latest product-entry increment and scope correction
+## Latest truthful resource-state increment
+
+Production source `efddd31e53f411b1aea0a16b5af1a76acf38abb5`, final test-only
+correction `2d70427dad8b6598ada0e2d6bfb044d2fed23082`, fixed predecessor
+`2822d90e7f32abb48c01f5a6cde14f5f1c9a4450`: pending and failed Scenario reads no
+longer claim an empty source; genuine fresh empty inventory and absent Task/
+Evidence selections have scoped explanations. No implicit object substitution,
+Feature version change, new execution or schema migration was introduced.
+
+The [resource progress record](frontend-v21-issue134-resource-pages-progress.md)
+contains real SQLite input/source identity, red/green chronology, 14-case logical
+size/font matrix, actual Software and verified Direct3D11 results and independent
+Standards/Spec reviews (0 new actionable findings on either axis). The initial
+requested-D3D11 sample actually ran Software; it is retained and excluded from
+Direct3D11 evidence. The corrected harness checks the actual API for every case.
+
+The 330-case regression finished 327 passed/3 failed: the three existing Archive
+invalid-reference tests still demanded the misleading old empty-resource copy.
+Only their assertions changed, retaining exact-identity and focus protections.
+The two complete resource modules then passed all 45 cases, including those three;
+production remained unchanged. These are separate, overlapping reports, not a
+claim that the original 330-case report was all green. Exact hashes and boundaries
+are in the resource record above.
+
+Native Windows UIA verification could not start: Computer Use failed to initialize
+its kernel assets both before and after one kernel reset. It remains unverified;
+QAccessible tests do not replace it. This local source increment does not close
+#134 or certify the complete V2.1, native DPI/Narrator or installed 750ms gates.
+
+## Previous product-entry increment and scope correction
 
 Fixed predecessor `2e8222ecfa1e46b4804311ec49aebbe10f058481`; entry source
 `59d944036b3f8b389cf0f583fdffbbd5f22e7a6a`; corrected source
