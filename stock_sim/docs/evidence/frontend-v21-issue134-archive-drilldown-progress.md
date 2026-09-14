@@ -2,6 +2,7 @@
 
 Date: 2026-09-14. Audited local predecessor:
 `a5c702b9abbd0d56538f8c3383f5ee97efb1534d`.
+Implementation checkpoint: `f0e0ef0d00189a067e492ee4777e50847a4553f8`.
 This is an implementation checkpoint, not #134 closure or V2.1 acceptance.
 #134 was freshly read: OPEN, assigned m4ngod, ready-for-agent. Published #132 v1.0
 SHA-256 remains `A4D64B033E55DCD5203B6204AA01932501EEBD06AE55BAB45EDF2FCDF48C839E`.
@@ -98,6 +99,77 @@ DPR, text scale and evidence package. Their links expose accessible names,
 button roles, focusable/enabled state and on-client geometry. Independent review
 is pending for this checkpoint. QAccessible and offscreen screenshots do not
 substitute for native Windows UIA, Narrator, or the full physical-DPI matrix.
+
+The separate unchanged legacy Evidence route is also green:
+`archive-drilldown-legacy-evidence-route.xml`, **4 passed in 1.76 s**. Source
+screenshots in `archive-drilldown-frames/` were inspected at 1426×786/text100% and
+960×480/text200%. They show the comparison's exact relation buttons and an
+operable compact scroll region. The legacy English terms, long-text density and
+default scrollbar styling remain refinement work, not a full visual acceptance.
+
+| Before | After | Why |
+| --- | --- | --- |
+| Archive exposed only original record values. | Comparisons and findings retain their original relationships and support exact, reversible drill-down. | Preserve the legacy analytical path without recomputing conclusions. |
+| Dynamic related buttons did not respond to Enter. | Enter and Space both activate the exact related object. | Keep keyboard behavior consistent across the workspace. |
+| A focused relation could move off-client after layout changed or disappear after source invalidation. | Layout re-exposes the action; invalidation returns focus to the visible parent list entry point. | Keep the currently actionable keyboard target reachable. |
+
+## Independent review and follow-up behavior checks
+
+Both independent review agents inspected the fixed, verified nonempty range
+`git diff a5c702b9abbd0d56538f8c3383f5ee97efb1534d...f0e0ef0d00189a067e492ee4777e50847a4553f8`;
+f0e0ef0 was its only commit. Both were read-only and did not run tests.
+
+### Standards
+
+The initial fixed-code review found no confirmed hard violation or concrete smell.
+It correctly identified three scroll behaviors requiring actual input validation:
+long-text keyboard navigation after wrapping TextArea in a Column; retaining an old
+scroll offset when selecting another resource; and cutting off a focused link by
+shrinking height without changing width. Main-task follow-up tests then confirmed
+these behavior gaps. Their fixes and evidence are below; final independent
+classification/recheck is pending, so the initial zero count is not presented as
+final acceptance of the follow-up.
+
+### Spec
+
+One P2: when a return-stack parent no longer resolved, `resolveRelated()` cleared
+the content but focused empty details instead of the parent list/title required
+by D14. The test also incorrectly expected detail focus. The corrected normal and
+compact tests both require the visible parent list or list trigger. The shared
+`focusParent()` path now handles missing returns as well as removed focused links.
+`archive-review-parent-return-red.xml`: 4 failures; then
+`archive-review-parent-return-green.xml`: 14 relevant navigation cases pass.
+Independent recheck is pending for this tested fix.
+
+### Scroll red/green evidence
+
+- `archive-long-detail-keyboard-red.xml` passed but only inspected the unchanged
+  cursor rectangle. It was a weak check, not a valid keyboard-navigation pass.
+  Adding an assertion that Ctrl+End actually reaches the text end produced
+  `archive-long-detail-keyboard-position-red.xml`: 2 failures. Enabling read-only
+  keyboard selection then exposed the compact cursor outside the visible area
+  (`archive-long-detail-keyboard-enabled.xml`: 1 fail, 1 pass). Cursor movement now
+  scrolls its actual region into view; text remains read-only.
+- `archive-height-resize-focus-red.xml`: 1 failure at 1426×786 -> 1426×480 with
+  width held constant and the same link still focused below the client. Changes
+  to available scroll height now re-expose the focused link or text region.
+- `archive-catalog-reselection-scroll.xml`: 1 compact failure, 1 normal pass.
+  Selecting another long finding after scrolling links retained the old offset;
+  the first line was above the viewport. Explicit catalogue selection now resets
+  the content offset. It does not reset the source or replace identities.
+- `archive-review-all-navigation-green.xml`: 14 passed in 5.78 s, including both
+  return-failure states at normal/compact size, source retention/invalidation,
+  original and cross-candidate relations, same-window height resize, true text-end
+  navigation, text-home navigation and subsequent catalogue selection.
+- Final follow-up combined run: `archive-review-fixes-full-regression.xml`,
+  **109 passed in 86.80 s**, no warnings (31 resource, 14 shell, 39 exact-inspector,
+  25 Journey Rail cases), including all three reopened sealed-file live reads.
+
+| Before | After | Why |
+| --- | --- | --- |
+| Invalid return focused empty details. | It focuses the visible parent list or compact list trigger. | Match D14's semantic fallback. |
+| Ctrl+End was inert, then exposed a cursor outside the viewport when enabled. | Read-only keyboard selection works and its actual cursor region is scrolled into view. | Reading and copying long details must remain keyboard-operable. |
+| Height-only resizing or selecting another long resource could retain an unusable scroll offset. | Available-height changes preserve focused content; catalogue selection opens details at the beginning. | Keep focus and precise identity visible when layout or selection changes. |
 
 ## Remaining #134 work
 

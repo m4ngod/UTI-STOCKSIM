@@ -43,6 +43,13 @@ startup samples bind to 6d33e71, not the earlier a07793c: Software 896.4478 ms
 comparison or formal acceptance claim. See the resource progress document and
 `frontend-v21-issue134-resource-startup-source-probe.json` for exact evidence.
 
+Archive drill-down is now implemented at f0e0ef0 with original comparisons and
+findings, exact related-object navigation (including same-package cross-candidate
+references), and reversible key-based returns. Its first combined run passes 107
+cases and the old Evidence route separately passes 4. Follow-up return-focus and
+scroll fixes are tracked in `frontend-v21-issue134-archive-drilldown-progress.md`;
+native/startup and remaining shell gates below are not waived.
+
 ## Evidence recorded so far
 
 Evidence folder: `F:/PythonProjects/.scratch/frontend-v21-goal/issue134-20260914/`.
@@ -163,8 +170,8 @@ SHA-256 binding for the final review-fix run (local file bytes before commit):
 
 ### Remaining implementation and verification
 
-1. Finish the resource projections after the Scenario/Lab/Archive first read paths:
-   archive comparison/finding drill-down, unavailable-source recovery and retained
+1. Finish resource-state coverage after the existing Scenario/Lab/Archive reads
+   and Archive relation drill-down: live unavailable-source recovery and retained
    exact context; independently usable task/run observation inside the Lab.
    Do not expose legacy AI authoring as V2.1 creation or invent Attempt/checkpoint
    semantics. Full creation and cross-experiment analysis remain successor slices.

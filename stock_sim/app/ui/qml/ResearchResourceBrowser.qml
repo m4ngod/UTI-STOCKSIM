@@ -30,6 +30,7 @@ Item {
         parentKeys = []
         navigationError = ""
         selectedEntry = entries[index]
+        detailScroll.contentItem.contentY = 0
         if (compact)
             listDrawer.close()
         details.forceActiveFocus()
@@ -44,7 +45,16 @@ Item {
         selectedEntry = exact === undefined ? null : exact
         navigationError = exact === undefined ? "关联资源不可用：" + label + "。未选择其他对象。" : ""
         detailScroll.contentItem.contentY = 0
-        details.forceActiveFocus()
+        if (exact === undefined)
+            focusParent()
+        else
+            details.forceActiveFocus()
+    }
+    function focusParent() {
+        if (compact)
+            listButton.forceActiveFocus()
+        else
+            catalog.forceActiveFocus()
     }
     function returnToParent() {
         if (!parentKeys.length)
@@ -55,12 +65,29 @@ Item {
     }
     function revealControl(control) {
         const top = control.mapToItem(detailContent, 0, 0).y
+        revealRegion(top, control.height)
+    }
+    function revealRegion(top, height) {
         const current = detailScroll.contentItem.contentY
-        const bottom = top + control.height
+        const bottom = top + height
         if (top < current)
             detailScroll.contentItem.contentY = top
         else if (bottom > current + detailScroll.availableHeight)
             detailScroll.contentItem.contentY = Math.max(0, bottom - detailScroll.availableHeight)
+    }
+    function revealFocusedDetail() {
+        if (details.activeFocus) {
+            const cursor = details.cursorRectangle
+            revealRegion(details.y + cursor.y, cursor.height)
+            return
+        }
+        for (let index = 0; index < relatedLinks.count; ++index) {
+            const link = relatedLinks.itemAt(index)
+            if (link !== null && link.activeFocus) {
+                revealControl(link)
+                return
+            }
+        }
     }
     function reflowList() {
         if (!catalog || !listDrawer)
@@ -102,12 +129,8 @@ Item {
         // The typed Feature owns last-reliable retention during transient loss.
         // Do not keep a second copy after that authoritative projection clears it.
         selectedEntry = exact === undefined ? null : exact
-        if (selectedEntry === null && relatedHadFocus) {
-            if (compact)
-                listButton.forceActiveFocus()
-            else
-                catalog.forceActiveFocus()
-        }
+        if (selectedEntry === null && relatedHadFocus)
+            focusParent()
     }
 
     Drawer {
@@ -182,6 +205,7 @@ Item {
                 Layout.fillHeight: true
                 contentWidth: availableWidth
                 contentHeight: detailContent.implicitHeight
+                onAvailableHeightChanged: browser.revealFocusedDetail()
                 Column {
                     id: detailContent
                     width: detailScroll.availableWidth
@@ -192,6 +216,8 @@ Item {
                         objectName: browser.objectName + "Details"
                         readOnly: true
                         selectByMouse: true
+                        selectByKeyboard: true
+                        onCursorRectangleChanged: { if (activeFocus) browser.revealFocusedDetail() }
                         wrapMode: TextEdit.WrapAnywhere
                         color: tokens.textPrimary
                         font.pixelSize: tokens.bodySize

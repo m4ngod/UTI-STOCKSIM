@@ -516,6 +516,14 @@ def test_archive_relation_drilldown_returns_to_exact_parent_with_keyboard(
         assert interface.state().focusable and not interface.state().disabled
         bounds = link.mapRectToScene(link.boundingRect())
         assert bounds.top() >= 0 and bounds.bottom() <= host.height()
+        if size[0] == 1426:
+            host.resize(1426, 480)
+            QTest.qWait(30)
+            bounds = link.mapRectToScene(link.boundingRect())
+            assert link.hasActiveFocus()
+            assert bounds.top() >= 0 and bounds.bottom() <= host.height()
+            host.resize(*size)
+            QTest.qWait(30)
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
         assert reference.identity.value in details.property("text")
         assert f"原值: {reference.value} {reference.unit}" in details.property("text")
@@ -531,6 +539,33 @@ def test_archive_relation_drilldown_returns_to_exact_parent_with_keyboard(
             assert finding.identity.value in details.property("text")
             assert details.hasActiveFocus()
         assert not back.isVisible()
+        if kind == "finding":
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_End, Qt.KeyboardModifier.ControlModifier)
+            QTest.qWait(20)
+            assert details.property("cursorPosition") == len(details.property("text"))
+            cursor = details.mapRectToScene(details.property("cursorRectangle"))
+            assert cursor.top() >= 0 and cursor.bottom() <= host.height()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home, Qt.KeyboardModifier.ControlModifier)
+            QTest.qWait(20)
+            cursor = details.mapRectToScene(details.property("cursorRectangle"))
+            assert cursor.top() >= 0 and cursor.bottom() <= host.height()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Tab)
+            if size[0] == 960:
+                root.findChild(QQuickItem, "researchArchivePageListButton").forceActiveFocus()
+                QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+            catalog.forceActiveFocus()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+            offset = len(candidate.evidence) + len(candidate.comparisons) + len(candidate.findings)
+            next_candidate = ready.candidates[1]
+            offset += len(next_candidate.evidence) + len(next_candidate.comparisons)
+            for _ in range(offset):
+                QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+            QTest.qWait(30)
+            assert next_candidate.findings[0].identity.value in details.property("text")
+            cursor = details.mapRectToScene(details.property("cursorRectangle"))
+            assert details.property("cursorPosition") == 0
+            assert cursor.top() >= 0 and cursor.bottom() <= host.height()
         assert feature.snapshot(selection).last_reliable_data == ready
         record_property("logical_client", f"{host.width()}x{host.height()}")
         record_property("dpr", host.devicePixelRatioF())
@@ -613,7 +648,8 @@ def test_archive_related_focus_tracks_reliable_source_or_falls_back_on_invalidat
 
 @pytest.mark.parametrize("resource_context", ["fake"], indirect=True)
 @pytest.mark.parametrize("missing", ["source", "parent"])
-def test_archive_missing_relation_never_reuses_old_content_or_selects_another_object(resource_context, missing):
+@pytest.mark.parametrize("compact", [False, True])
+def test_archive_missing_relation_never_reuses_old_content_or_selects_another_object(resource_context, missing, compact):
     app, context = resource_context
     selection = exact_evidence_context()
     feature = context.evidence_and_findings_feature
@@ -625,13 +661,17 @@ def test_archive_missing_relation_never_reuses_old_content_or_selects_another_ob
         context.run_monitoring_feature,
         evidence_feature=feature, evidence_context=selection,
         initial_route="evidence_and_findings", research_shell=True,
+        accessibility_preferences=AccessibilityPreferences(text_scale=2.0 if compact else 1.0, reduced_motion=True),
     )
-    host.resize(1426, 786)
+    host.resize(960 if compact else 1426, 480 if compact else 786)
     host.show()
     try:
         root = host.rootObject()
         catalog = root.findChild(QQuickItem, "researchArchivePageList")
         until(app, lambda: catalog.property("count") > 0)
+        if compact:
+            root.findChild(QQuickItem, "researchArchivePageListButton").forceActiveFocus()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
         catalog.forceActiveFocus()
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
         for _ in candidate.evidence:
@@ -666,7 +706,8 @@ def test_archive_missing_relation_never_reuses_old_content_or_selects_another_ob
         assert "关联资源不可用" in text and "未选择其他对象" in text
         assert "旧证据兼容 · 原始观察" not in text
         assert "旧证据兼容 · 原始比较" not in text
-        assert details.hasActiveFocus()
+        parent_control = root.findChild(QQuickItem, "researchArchivePageListButton") if compact else catalog
+        assert parent_control.hasActiveFocus() and parent_control.isVisible()
     finally:
         host.close_adapter()
         host.close()
