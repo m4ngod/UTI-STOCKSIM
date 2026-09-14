@@ -118,8 +118,12 @@ def test_four_primary_pages_are_keyboard_operable_without_health_destination(res
     assert health not in navigation
 
 
-@pytest.mark.parametrize("research_host", [EXACT_RUN_CONTEXT], indirect=True)
-def test_legacy_run_route_observes_exact_run_instead_of_inactive_task_summary(research_host):
+@pytest.mark.parametrize("research_host", [
+    {"context": EXACT_RUN_CONTEXT, "size": size, "text_scale": scale}
+    for size in ((960, 480), (960, 540), (1426, 786), (2600, 1400))
+    for scale in (1.0, 2.0)
+], indirect=True)
+def test_legacy_run_route_observes_exact_run_instead_of_inactive_task_summary(research_host, record_property):
     _, context, host = research_host
     selection = EXACT_RUN_CONTEXT.selection
     assert selection is not None and selection.run_id is not None
@@ -131,6 +135,26 @@ def test_legacy_run_route_observes_exact_run_instead_of_inactive_task_summary(re
     assert selection.run_id.value in summary.property("text")
     assert "running" in summary.property("text")
     assert "2 / 10" in summary.property("text")
+    interface = QAccessible.queryAccessibleInterface(summary)
+    assert interface is not None and interface.isValid()
+    assert interface.role() is QAccessible.Role.EditableText
+    assert interface.text(QAccessible.Text.Name) == "当前兼容资源状态"
+    assert selection.run_id.value in interface.text(QAccessible.Text.Value)
+    assert interface.state().readOnly
+    summary.forceActiveFocus()
+    original_text = summary.property("text")
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_X)
+    assert summary.property("text") == original_text
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_End, Qt.KeyboardModifier.ControlModifier)
+    QTest.qWait(30)
+    assert summary.hasActiveFocus()
+    assert summary.property("cursorPosition") == len(summary.property("text"))
+    cursor = summary.mapRectToScene(summary.property("cursorRectangle"))
+    assert cursor.top() >= 0 and cursor.bottom() <= host.height()
+    record_property("logical_client", f"{host.width()}x{host.height()}")
+    record_property("dpr", host.devicePixelRatioF())
+    record_property("text_scale", host.rootObject().findChild(QObject, "designTokens").property("textScale"))
+    record_property("renderer", host.quickWindow().rendererInterface().graphicsApi().name)
     context.run_monitoring_feature.advance_to_completed(EXACT_RUN_CONTEXT)
     QTest.qWait(50)
     assert selection.run_id.value in summary.property("text")

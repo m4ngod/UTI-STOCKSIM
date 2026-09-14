@@ -154,7 +154,9 @@ Rectangle {
             TextArea {
                 objectName: "researchExistingResourceSummary"
                 readOnly: true
+                Accessible.readOnly: true
                 selectByMouse: true
+                selectByKeyboard: true
                 wrapMode: TextEdit.WrapAnywhere
                 color: tokens.textPrimary
                 font.pixelSize: tokens.bodySize

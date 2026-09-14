@@ -825,14 +825,17 @@ def test_open_resource_drawer_reflows_without_losing_exact_selection_or_focus(
         root = host.rootObject()
         catalog = root.findChild(QQuickItem, "researchScenarioPageList")
         until(app, lambda: catalog.property("count") > 0)
-        expected = context.scenario_lab_feature.snapshot(context.scenario_lab_context).market_scenarios[0]
+        scenarios = context.scenario_lab_feature.snapshot(context.scenario_lab_context).market_scenarios
+        assert len(scenarios) >= 2, "The live fixture must expose a non-default Scenario"
+        expected = scenarios[1]
         catalog.forceActiveFocus()
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
         details = root.findChild(QQuickItem, "researchScenarioPageDetails")
-        original_text = details.property("text")
-        assert expected.scenario_id.value in original_text
+        assert expected.scenario_id.value in details.property("text")
         selected_index = catalog.property("currentIndex")
+        assert selected_index == 1
         drawer = root.findChild(QObject, "researchScenarioPageDrawer")
         toggle = root.findChild(QQuickItem, "researchScenarioPageListButton")
         catalog.forceActiveFocus()
@@ -857,7 +860,7 @@ def test_open_resource_drawer_reflows_without_losing_exact_selection_or_focus(
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
         until(app, lambda: details.hasActiveFocus() and not drawer.property("opened"))
         assert expected.scenario_id.value in details.property("text")
-        assert context.scenario_lab_feature.snapshot(context.scenario_lab_context).market_scenarios[0] == expected
+        assert context.scenario_lab_feature.snapshot(context.scenario_lab_context).market_scenarios[1] == expected
         record_property("dpr", host.devicePixelRatioF())
         record_property("text_scale", scale)
         record_property("source_revision", context.scenario_lab_feature.snapshot(context.scenario_lab_context).source_revision.value)
