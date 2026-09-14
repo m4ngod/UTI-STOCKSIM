@@ -80,6 +80,7 @@ Item {
                 font.pixelSize: tokens.titleSize
                 font.bold: true
                 Accessible.role: Accessible.Heading
+                Accessible.name: text
             }
             DiagnosticCommandButton {
                 id: listButton
@@ -108,6 +109,7 @@ Item {
             font.pixelSize: tokens.bodySize
             wrapMode: Text.WrapAnywhere
             Accessible.role: Accessible.StatusBar
+            Accessible.name: text
         }
         RowLayout {
             Layout.fillWidth: true
@@ -141,7 +143,9 @@ Item {
                         objectName: "researchAssetDetails"
                         text: adapter.resultText + "\n\n" + adapter.limitationText
                         readOnly: true
+                        Accessible.readOnly: true
                         selectByMouse: true
+                        selectByKeyboard: true
                         wrapMode: TextEdit.WrapAnywhere
                         font.pixelSize: tokens.bodySize
                         color: tokens.textPrimary

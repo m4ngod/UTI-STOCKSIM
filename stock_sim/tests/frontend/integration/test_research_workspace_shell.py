@@ -118,6 +118,56 @@ def test_four_primary_pages_are_keyboard_operable_without_health_destination(res
     assert health not in navigation
 
 
+@pytest.mark.parametrize("route", [
+    "strategy_library", "scenario_lab", "diagnostic_tasks", "evidence_and_findings",
+])
+def test_page_status_and_heading_expose_their_visible_accessible_names(research_host, route):
+    _, _, host = research_host
+    assert host.activate_route(JourneyWorkspaceRoute(route))
+    QTest.qWait(40)
+    messages = []
+    for item in visual_items(host.rootObject()):
+        if not item.isVisible() or not item.property("text"):
+            continue
+        interface = QAccessible.queryAccessibleInterface(item)
+        if interface is not None and interface.role() in (
+            QAccessible.Role.StatusBar, QAccessible.Role.Heading,
+        ):
+            messages.append((interface.role(), item.property("text"),
+                             interface.text(QAccessible.Text.Name)))
+    assert {role for role, _, _ in messages} == {
+        QAccessible.Role.StatusBar, QAccessible.Role.Heading,
+    }
+    assert all(name == message for _, message, name in messages), messages
+
+
+def test_health_overlay_heading_exposes_its_visible_accessible_name(research_host):
+    _, _, host = research_host
+    assert host.activate_route(JourneyWorkspaceRoute.SYSTEM_HEALTH)
+    QTest.qWait(40)
+    headings = []
+    for item in visual_items(host.quickWindow().contentItem()):
+        if not item.isVisible() or item.property("text") != "系统状态":
+            continue
+        interface = QAccessible.queryAccessibleInterface(item)
+        if interface is not None and interface.role() is QAccessible.Role.Heading:
+            headings.append(interface.text(QAccessible.Text.Name))
+    assert headings == ["系统状态"]
+
+
+def test_combination_details_expose_readonly_state_and_allow_keyboard_reading(research_host):
+    _, _, host = research_host
+    details = host.rootObject().findChild(QQuickItem, "researchAssetDetails")
+    interface = QAccessible.queryAccessibleInterface(details)
+    assert interface is not None and interface.state().readOnly
+    details.forceActiveFocus()
+    original = details.property("text")
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_X)
+    assert details.property("text") == original
+    QTest.keyClick(host.quickWindow(), Qt.Key.Key_End, Qt.KeyboardModifier.ControlModifier)
+    assert details.property("cursorPosition") == len(original)
+
+
 @pytest.mark.parametrize("research_host", [
     {"context": EXACT_RUN_CONTEXT, "size": size, "text_scale": scale}
     for size in ((960, 480), (960, 540), (1426, 786), (2600, 1400))
@@ -368,6 +418,19 @@ def test_combination_page_reads_the_same_exact_application_asset_in_both_layouts
         assert target.version_id in details.property("text")
         assert details.property("readOnly") is True
         assert "不会自动生成因子或组合" in details.property("text")
+        interface = QAccessible.queryAccessibleInterface(details)
+        assert interface is not None and interface.state().readOnly
+        assert target.content_hash in interface.text(QAccessible.Text.Value)
+        details.forceActiveFocus()
+        original_text = details.property("text")
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_X)
+        assert details.property("text") == original_text
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_End, Qt.KeyboardModifier.ControlModifier)
+        QTest.qWait(30)
+        assert details.hasActiveFocus()
+        assert details.property("cursorPosition") == len(original_text)
+        cursor = details.mapRectToScene(details.property("cursorRectangle"))
+        assert cursor.top() >= 0 and cursor.bottom() <= host.height()
         record_property("logical_client", f"{host.width()}x{host.height()}")
         record_property("dpr", host.devicePixelRatioF())
         record_property("text_scale", scale)

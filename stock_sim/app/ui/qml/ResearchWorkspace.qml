@@ -145,6 +145,7 @@ Rectangle {
             color: tokens.textPrimary
             font.pixelSize: tokens.bodySize
             Accessible.role: Accessible.StatusBar
+            Accessible.name: text
         }
         ScrollView {
             Layout.fillWidth: true

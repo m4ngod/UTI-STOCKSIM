@@ -39,6 +39,7 @@ Popup {
                 color: tokens.textPrimary
                 font.pixelSize: tokens.titleSize
                 Accessible.role: Accessible.Heading
+                Accessible.name: text
             }
             DiagnosticCommandButton {
                 id: closeButton

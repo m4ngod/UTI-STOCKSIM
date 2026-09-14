@@ -171,6 +171,7 @@ Item {
                 font.pixelSize: tokens.titleSize
                 font.bold: true
                 Accessible.role: Accessible.Heading
+                Accessible.name: text
             }
             DiagnosticCommandButton {
                 id: listButton
@@ -189,6 +190,7 @@ Item {
             wrapMode: Text.WrapAnywhere
             font.pixelSize: tokens.bodySize
             Accessible.role: Accessible.StatusBar
+            Accessible.name: text
         }
         RowLayout {
             Layout.fillWidth: true
