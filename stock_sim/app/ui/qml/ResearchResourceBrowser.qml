@@ -20,8 +20,6 @@ Item {
     readonly property string selectedEvidence: selectedEntry === null ? "" : (selectedEntry.evidence || "")
     readonly property bool wide: !compact && selectedEvidence.length > 0
         && width >= listMinimumWidth + detailMinimumWidth + evidenceMinimumWidth + tokens.spaceMd * 2
-    readonly property bool selectionInCatalog: selectedEntry !== null && entries.some(
-        function(entry) { return entry.key === selectedEntry.key })
     FontMetrics { id: metrics; font.pixelSize: tokens.bodySize }
 
     function choose(index) {
@@ -64,8 +62,9 @@ Item {
         if (selectedEntry === null)
             return
         const exact = entries.find(function(entry) { return entry.key === selectedEntry.key })
-        if (exact !== undefined)
-            selectedEntry = exact
+        // The typed Feature owns last-reliable retention during transient loss.
+        // Do not keep a second copy after that authoritative projection clears it.
+        selectedEntry = exact === undefined ? null : exact
     }
 
     Drawer {
@@ -142,8 +141,7 @@ Item {
                     Accessible.readOnly: true
                     text: (browser.selectedEntry === null
                         ? (browser.entries.length ? "从对象列表选择精确资源。" : "当前没有可读取的资源。")
-                        : (!browser.selectionInCatalog ? "当前对象不在可用目录中；保留最后读取的精确详情。\n\n" : "")
-                            + browser.selectedEntry.details
+                        : browser.selectedEntry.details
                             + (!browser.wide && browser.selectedEvidence.length ? "\n\n精确来源\n" + browser.selectedEvidence : ""))
                         + "\n\n" + browser.limitationText
                     background: Rectangle {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 from time import monotonic, sleep
 
@@ -22,6 +23,8 @@ from app.features import (
 from app.features.scenario_lab_application import (
     CreateScenarioRecipeDraftCommand, ScenarioLabActorId, ScenarioRecipeAuthoringMode,
 )
+from app.features.evidence_and_findings import EvidenceAndFindingsPresentationState
+from app.features.run_monitoring import Completeness, StructuredFeatureError, ViewPhase
 from app.ui.journey_workspace import JourneyWorkspaceHost
 from app.ui.accessibility import AccessibilityPreferences
 from tests.frontend.contract.test_diagnostic_task_campaign_start_live_contract import (
@@ -298,6 +301,95 @@ def test_archive_drills_into_original_evidence_with_values_and_provenance(resour
         assert candidate.provenance.artifact_hashes[0] in text
         assert "旧证据兼容" in text and "跨实验统计尚未接入" in text
         assert feature.snapshot(selection).last_reliable_data == expected
+    finally:
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+@pytest.mark.parametrize("resource_context", ["fake"], indirect=True)
+def test_archive_clears_old_details_when_the_exact_reference_becomes_invalid(resource_context):
+    app, context = resource_context
+    selection = exact_evidence_context()
+    feature = context.evidence_and_findings_feature
+    ready = feature.advance_to_completed(selection)
+    record = ready.last_reliable_data.candidates[0].evidence[0]
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        evidence_feature=feature, evidence_context=selection,
+        initial_route="evidence_and_findings", research_shell=True,
+    )
+    host.resize(1426, 786)
+    host.show()
+    try:
+        catalog = host.rootObject().findChild(QQuickItem, "researchArchivePageList")
+        until(app, lambda: catalog.property("count") > 0)
+        catalog.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        details = host.rootObject().findChild(QQuickItem, "researchArchivePageDetails")
+        assert record.identity.value in details.property("text")
+        failure = replace(
+            ready, revision=ready.revision + 1, phase=ViewPhase.FAILED,
+            presentation=EvidenceAndFindingsPresentationState.FAILED,
+            last_reliable_data=None, completeness=Completeness.UNKNOWN,
+            error=StructuredFeatureError(
+                code="evidence_reference_missing", message="所选精确证据引用已失效。", retryable=False,
+            ),
+        )
+        feature.replay_scripted_state(selection, failure)
+        until(app, lambda: catalog.property("count") == 0)
+        assert record.identity.value not in details.property("text")
+        assert "当前没有可读取的资源" in details.property("text")
+        page = host.rootObject().findChild(QQuickItem, "researchArchivePage")
+        assert failure.error.message in page.property("statusText")
+        assert details.hasActiveFocus()
+    finally:
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+@pytest.mark.parametrize("resource_context", ["fake"], indirect=True)
+def test_archive_retains_same_identity_during_disconnection_and_updates_after_recovery(resource_context):
+    app, context = resource_context
+    selection = exact_evidence_context()
+    feature = context.evidence_and_findings_feature
+    ready = feature.advance_to_completed(selection)
+    record = ready.last_reliable_data.candidates[0].evidence[0]
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        evidence_feature=feature, evidence_context=selection,
+        initial_route="evidence_and_findings", research_shell=True,
+    )
+    host.resize(1426, 786)
+    host.show()
+    try:
+        catalog = host.rootObject().findChild(QQuickItem, "researchArchivePageList")
+        until(app, lambda: catalog.property("count") > 0)
+        catalog.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        details = host.rootObject().findChild(QQuickItem, "researchArchivePageDetails")
+        original_text = details.property("text")
+        disconnected = feature.advance_to_disconnected(selection)
+        page = host.rootObject().findChild(QQuickItem, "researchArchivePage")
+        until(app, lambda: disconnected.error.message in page.property("statusText"))
+        assert details.property("text") == original_text
+        assert details.hasActiveFocus()
+        assert record.identity.value in original_text
+        partial = feature.advance_to_partial(selection)
+        until(app, lambda: partial.error.message in page.property("statusText"))
+        assert record.identity.value in details.property("text")
+        assert "可用性: partial" in details.property("text")
+        feature.advance_to_completed(selection)
+        until(app, lambda: "可用性: complete" in details.property("text"))
+        assert details.property("text") == original_text
+        assert details.hasActiveFocus()
     finally:
         host.close_adapter()
         host.close()

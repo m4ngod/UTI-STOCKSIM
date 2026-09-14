@@ -91,6 +91,70 @@ offscreen Software/QAccessible observations, not native Windows UIA, Narrator or
 the full physical-DPI matrix. English legacy status terminology, long-identity
 presentation and remaining per-page layout work still require refinement.
 
+## Resource checkpoint review and verification
+
+Resource implementation checkpoint: `fbc915a43413419d31331c89f41963e04647f157`.
+Independent reviewers used the fixed, nonempty range
+`git diff 07b691236978164ccdf5b4726eaa68e0d9d33f3f...fbc915a43413419d31331c89f41963e04647f157`;
+the only commit was fbc915a. Both reviews were read-only; neither agent ran tests.
+
+### Standards
+
+No hard documented-standard violation or concrete baseline smell was reported.
+The public Feature projections and original identities remain intact. List/source
+reflow captures or transfers focus before hiding content, and details remain
+read-only. This is a review of this increment, not full #134 acceptance.
+
+### Spec
+
+One P2: the shared browser retained a selected row after the authoritative resource
+projection removed it. It therefore failed D02's distinction between invalid
+references (clear old content and show the target error) and same-identity
+temporary unavailability (retain reliable content). No scope creep was reported;
+the already documented unfinished ticket work was not counted as a new finding.
+
+The fix now resolves the selected exact key only against the current Feature
+projection and clears it when absent. The Feature already owns last-reliable
+retention during transient failures, so no duplicate QML cache, new Feature
+Interface, string-error classification or persistence schema was introduced.
+`resource-invalid-reference-red.xml` reproduces the displayed invalid record;
+`resource-invalid-reference-green.xml` passes with the old identity cleared,
+target error visible and detail focus retained. A separate regression drives
+completed -> disconnected -> partial -> recovered and checks that the same
+selection remains, its availability updates and its reliable content returns.
+Reviewer recheck of this fix is pending at this checkpoint.
+
+Review summary: Standards 0 findings; Spec 1 P2 with a tested local fix, pending
+independent recheck. Neither axis grants a whole-ticket PASS.
+
+| Before | After | Why |
+| --- | --- | --- |
+| The other three pages only summarized status. | Existing scenes, exact selected tasks and original evidence have keyboard-readable lists/details. | Make the first shell slice useful without inventing successor authoring or statistics. |
+| Wide source collapse hid a focused region. | Its exact content and focus move into visible details. | Preserve keyboard continuity as space changes. |
+| The browser kept content after its reference was invalidated. | Removed authoritative data clears; same-identity retained Feature data stays visible. | Distinguish invalid references from temporary source loss. |
+
+Completed verification for this resource increment:
+
+- `resource-pages-regression.xml`: 90 passed in 63.72 s (14 shell, 12 resource,
+  39 exact-inspector, 25 Journey Rail cases).
+- `resource-pages-legacy-routes.xml`: 38 passed in 182.31 s (old Scenario, Task
+  and Evidence routes); these routes do not instantiate the changed resource browser.
+- `resource-review-fix-regression.xml`: 14 resource cases passed in 26.31 s
+  after the fix. Three JUnit warnings concern `record_property` versus default
+  xunit2 formatting; the final combined run uses legacy JUnit explicitly.
+- `resource-review-fixes-full-regression.xml`: **92 passed in 63.67 s**, no warnings
+  (14 shell, 14 resource, 39 exact-inspector and 25 Journey Rail cases). This final
+  combined run includes the unwarmed sealed-file live Archive read again.
+
+SHA-256 bindings:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `resource-pages-regression.xml` | `9DAF2BB0131D4A2C7514530FD44373B560B92BE817444FA58148546A343D69FD` |
+| `resource-pages-legacy-routes.xml` | `11D169428A684C01C6C4BAFABAFA9F76384C690E418F92E833C05A7A69987220` |
+| `resource-invalid-reference-red.xml` | `A060B909B80B408D5B399BB248F38A75FD57CE8C14394F7175376960146A4047` |
+| `resource-invalid-reference-green.xml` | `6C8577F2B8B798FAC5FCE93969A8CE4F88E0FBE12BE7CF4600343BAA6B4F4A22` |
+
 ## Outstanding local gates
 
 The first native startup samples still refer to a07793c, not this changed shell;
