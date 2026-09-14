@@ -4,7 +4,24 @@ Date: 2026-09-14. Ticket: https://github.com/m4ngod/UTI-STOCKSIM/issues/134.
 Parent: published specification #132 v1.0. Audited predecessor:
 `f354f0328ba33e10f98b8018e886d170c8d72c0d` (#133).
 
-## Latest native observation and accessible text repair
+## Latest native states and legacy Run focus repair
+
+Five additional composed product sessions cover controlled waiting/error/retry,
+actual 960x540 at text100/200, a wide Scenario source column and same-window
+reflow, a persisted completed Run, and sealed partial evidence at 960x480/text200.
+A newly observed missing legacy Run focus outline was reproduced in eight
+rendered cases and fixed in `54617ac8203a0879fa30ce9af396c7448613aa08`.
+The new four-module regression passes **110 cases**; native Tab/Shift+Tab confirms
+the outline appears and disappears while the exact Run remains unchanged.
+
+See [native states and Run focus evidence](frontend-v21-issue134-native-state-and-run-focus.md)
+for exact inputs, stable measured geometry, hashes and red/green results.
+The supported native readonly guard still fails with CacheRequest 0x80070057,
+and its focus field still disagrees with observed focus. #134 remains OPEN and
+the full goal ACTIVE. No full matrix, Narrator, installed gate or successor PASS
+is inferred.
+
+## Previous native observation and accessible text repair
 
 The new owner task's official Computer Use entry now initializes and operates the
 real product. The historical initialization failures below no longer describe
