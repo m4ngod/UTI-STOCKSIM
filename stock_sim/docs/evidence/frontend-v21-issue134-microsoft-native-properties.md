@@ -1,5 +1,9 @@
 # Frontend V2.1 #134 — Microsoft native property observation
 
+Later correction: [catalog native remediation](frontend-v21-issue134-catalog-native-remediation.md)
+resolves the focusability, committed-selection and mouse/keyboard return defects
+on subsequent source commits. This document preserves the original observations.
+
 Observed 2026-09-15, 12:47–13:10 Asia/Shanghai, source
 `5ad64b6e281855bb95f82fcc7c9434d05bbc5803`. This increment establishes a supported
 native property observation path. It also exposes a remaining catalog state
