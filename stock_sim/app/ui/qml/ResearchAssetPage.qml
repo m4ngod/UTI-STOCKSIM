@@ -185,6 +185,8 @@ Item {
             implicitHeight: Math.max(48, contentItem.implicitHeight + tokens.spaceMd * 2)
             highlighted: index === adapter.selectedIndex
             Accessible.name: text + "，第 " + (index + 1) + " 项，共 " + assetList.count + " 项"
+            // ListItem does not inherit Accessible.focusable from its keyboard focus.
+            Accessible.focusable: enabled
             onClicked: page.choose(index)
             contentItem: Text {
                 text: parent.text

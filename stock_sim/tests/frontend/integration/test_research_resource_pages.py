@@ -216,6 +216,12 @@ def test_scenario_page_keyboard_reads_exact_legacy_resource_and_explains_type(re
         catalog.forceActiveFocus()
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Home)
+        row = next(item for item in catalog.property("contentItem").childItems()
+                   if item.property("index") == catalog.property("currentIndex")
+                   and item.property("text"))
+        interface = QAccessible.queryAccessibleInterface(row)
+        assert interface is not None and interface.state().focused
+        assert interface.state().focusable, "A keyboard-focused resource row must be focusable"
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
         QTest.qWait(30)
         details = host.rootObject().findChild(QQuickItem, "researchScenarioPageDetails")

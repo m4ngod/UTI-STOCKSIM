@@ -333,6 +333,8 @@ Item {
             implicitHeight: Math.max(48, contentItem.implicitHeight + tokens.spaceMd * 2)
             highlighted: browser.selectedEntry !== null && browser.selectedEntry.key === modelData.key
             Accessible.name: text + "，第 " + (index + 1) + " 项，共 " + catalog.count + " 项"
+            // ListItem does not inherit Accessible.focusable from its keyboard focus.
+            Accessible.focusable: enabled
             onClicked: browser.choose(index)
             contentItem: Text {
                 text: parent.text

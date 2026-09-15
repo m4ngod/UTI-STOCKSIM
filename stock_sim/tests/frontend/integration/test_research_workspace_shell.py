@@ -376,6 +376,51 @@ def test_health_overlay_keeps_page_observation_and_returns_keyboard_focus(resear
     assert host.active_route is JourneyWorkspaceRoute.EVIDENCE_AND_FINDINGS
 
 
+@pytest.mark.parametrize("size", [(960, 540), (1426, 786)])
+def test_keyboard_catalog_row_exposes_focusable_state(composed, size):
+    app = QApplication.instance()
+    context, executor, _, inventory = composed
+    host = JourneyWorkspaceHost(
+        context.run_monitoring_feature,
+        strategy_library_feature=context.strategy_library_feature,
+        strategy_library_queries=context.strategy_library_queries,
+        feature_capabilities=context.feature_capabilities(),
+        initial_route="strategy_library", research_shell=True,
+    )
+    host.resize(*size)
+    host.show()
+    try:
+        app.processEvents()
+        executor.run_next()
+        app.processEvents()
+        app.processEvents()
+        root = host.rootObject()
+        catalog = root.findChild(QQuickItem, "researchAssetList")
+        assert catalog.property("count") == len(inventory.entries) >= 2
+        toggle = root.findChild(QQuickItem, "researchAssetListButton")
+        if toggle.isVisible():
+            toggle.forceActiveFocus()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+        catalog.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
+        QTest.qWait(30)
+        row = next(item for item in catalog.property("contentItem").childItems()
+                   if item.property("index") == catalog.property("currentIndex")
+                   and item.property("text"))
+        interface = QAccessible.queryAccessibleInterface(row)
+        assert interface is not None and interface.state().focused
+        assert interface.state().focusable, "A keyboard-focused catalog row must be focusable"
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        query = root.findChild(QQuickItem, "researchAssetReadButton")
+        assert query.isEnabled() and query.isVisible() and query.hasActiveFocus()
+    finally:
+        host.close_adapter()
+        host.close()
+        host.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
 @pytest.mark.parametrize("size,scale", [((1426, 786), 1.0), ((960, 480), 2.0)])
 def test_combination_page_reads_the_same_exact_application_asset_in_both_layouts(
     composed, size, scale, record_property,
