@@ -187,6 +187,8 @@ Item {
             Accessible.name: text + "，第 " + (index + 1) + " 项，共 " + assetList.count + " 项"
             // ListItem does not inherit Accessible.focusable from its keyboard focus.
             Accessible.focusable: enabled
+            Accessible.selectable: enabled
+            Accessible.selected: highlighted
             onClicked: page.choose(index)
             contentItem: Text {
                 text: parent.text

@@ -222,11 +222,15 @@ def test_scenario_page_keyboard_reads_exact_legacy_resource_and_explains_type(re
         interface = QAccessible.queryAccessibleInterface(row)
         assert interface is not None and interface.state().focused
         assert interface.state().focusable, "A keyboard-focused resource row must be focusable"
+        assert interface.state().selectable
+        assert not interface.state().selected
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
         QTest.qWait(30)
         details = host.rootObject().findChild(QQuickItem, "researchScenarioPageDetails")
         assert details.isVisible() and details.property("readOnly") is True
         assert details.hasActiveFocus()
+        assert row.property("highlighted")
+        assert interface.state().selected, "The committed resource must be exposed as selected"
         text = details.property("text")
         assert expected.scenario_id.value in text
         assert expected.recipe_version_id.value in text
@@ -234,6 +238,17 @@ def test_scenario_page_keyboard_reads_exact_legacy_resource_and_explains_type(re
         assert "类型未确认" in text and "兼容只读" in text
         assert "平行场景" not in text
         assert context.scenario_lab_feature.snapshot(context.scenario_lab_context).market_scenarios[0] == expected
+        catalog.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Down)
+        other = next(item for item in catalog.property("contentItem").childItems()
+                     if item.property("index") == catalog.property("currentIndex")
+                     and item.property("text"))
+        assert other is not row
+        other_interface = QAccessible.queryAccessibleInterface(other)
+        assert other_interface.state().focused and not other_interface.state().selected
+        assert interface.state().selected, "Moving the cursor must not replace the committed resource"
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        assert other_interface.state().selected and not interface.state().selected
     finally:
         host.close_adapter()
         host.close()

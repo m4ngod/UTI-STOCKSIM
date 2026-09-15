@@ -410,9 +410,27 @@ def test_keyboard_catalog_row_exposes_focusable_state(composed, size):
         interface = QAccessible.queryAccessibleInterface(row)
         assert interface is not None and interface.state().focused
         assert interface.state().focusable, "A keyboard-focused catalog row must be focusable"
+        assert interface.state().selectable
+        assert not interface.state().selected
         QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
         query = root.findChild(QQuickItem, "researchAssetReadButton")
         assert query.isEnabled() and query.isVisible() and query.hasActiveFocus()
+        assert row.property("highlighted")
+        assert interface.state().selected, "The committed version must be exposed as selected"
+        if toggle.isVisible():
+            toggle.forceActiveFocus()
+            QTest.keyClick(host.quickWindow(), Qt.Key.Key_Space)
+        catalog.forceActiveFocus()
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Up)
+        other = next(item for item in catalog.property("contentItem").childItems()
+                     if item.property("index") == catalog.property("currentIndex")
+                     and item.property("text"))
+        assert other is not row
+        other_interface = QAccessible.queryAccessibleInterface(other)
+        assert other_interface.state().focused and not other_interface.state().selected
+        assert interface.state().selected, "Moving the cursor must not replace the committed version"
+        QTest.keyClick(host.quickWindow(), Qt.Key.Key_Return)
+        assert other_interface.state().selected and not interface.state().selected
     finally:
         host.close_adapter()
         host.close()

@@ -335,6 +335,8 @@ Item {
             Accessible.name: text + "，第 " + (index + 1) + " 项，共 " + catalog.count + " 项"
             // ListItem does not inherit Accessible.focusable from its keyboard focus.
             Accessible.focusable: enabled
+            Accessible.selectable: enabled
+            Accessible.selected: highlighted
             onClicked: browser.choose(index)
             contentItem: Text {
                 text: parent.text
