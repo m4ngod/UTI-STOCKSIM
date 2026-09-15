@@ -99,3 +99,25 @@ property items without adding a new interface or expanding the shell's scope.
 Full Narrator, formal physical-DPI, installed-candidate A41 and later page
 authoring retain their own gates. The full #132 / #133–171 initiative remains
 incomplete; this record is not a whole-initiative or whole-group PASS.
+
+## Standards
+
+Independent review of `51157cc...b81f190`: 0 documented violations and 0
+actionable heuristic findings. The reviewer checked the documented placement,
+naming and domain conventions; the audit script and six raw native records;
+and the distinctions between Microsoft observation and Qt telemetry, fake
+fault input and real persistence, and historical and current test executions.
+ADR0038/0039 standalone text was not located or claimed reread. No files were
+edited, tests rerun or native windows operated by the reviewer.
+
+## Spec
+
+Independent review of the same range: 0 findings, with no specific remaining
+local evidence gap in #134's six criteria. The reviewer checked the official
+body, ledger, raw timeline, Microsoft screenshots and all 96 file hashes.
+The disconnected return precedes invalidation; the normal late return is
+correctly excluded. Later Narrator, DPI and installed performance gates do not
+reverse-block this shell ticket. Public upload and ticket completion remain
+separate actions; neither has occurred in this increment.
+
+Review totals: Standards 0 violations / 0 actionable smells; Spec 0 findings.
