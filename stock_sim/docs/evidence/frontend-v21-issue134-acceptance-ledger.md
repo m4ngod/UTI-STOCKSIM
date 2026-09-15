@@ -35,6 +35,11 @@ PASS while a component remains unverified.
 
 ## Supported native observation remains the unresolved requirement
 
+A [fresh-process and fresh-tool-session retry](frontend-v21-issue134-native-property-retry.md)
+at `1190560` reproduced the missing readonly result and conflicting focus fields.
+It also records that a failed readonly probe can move focus before its error,
+so the successful modal-return sequence is observed separately without a probe.
+
 The official `sky.get_window_state` field `focused_element` repeatedly names a
 background details Edit while the screenshot shows a navigation, list or popup
 focus outline and separately labelled Qt telemetry identifies that actual QML
