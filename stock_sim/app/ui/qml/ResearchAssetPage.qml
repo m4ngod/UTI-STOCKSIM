@@ -43,6 +43,7 @@ Item {
         if (index < 0 || index >= adapter.assets.length)
             return
         adapter.selectKey(adapter.assets[index].key)
+        assetList.currentIndex = index
         if (compact)
             listDrawer.close()
         readButton.forceActiveFocus()
